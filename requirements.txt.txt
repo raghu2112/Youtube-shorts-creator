@@ -1,0 +1,11 @@
+# requirements.txt
+# YouTube Shorts Generator - FastAPI + Edge TTS
+# Run: pip install -r requirements.txt
+
+fastapi[standard]>=0.115.0
+uvicorn[standard]>=0.30.0
+edge-tts>=6.1.0
+pydantic>=2.8.0
+
+# Optional: for production
+# python-multipart>=0.0.9
