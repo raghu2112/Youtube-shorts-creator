@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI YouTube Shorts Generator</title>
+    <style>
+        :root {
+            --color-primary: #2563eb;
+            --color-primary-hover: #1d4ed8;
+            --color-bg: #0f172a;
+            --color-surface: #1e293b;
+            --color-text: #f1f5f9;
+            --color-text-secondary: #cbd5e1;
+            --color-success: #10b981;
+            --color-error: #ef4444;
+            --color-warning: #f59e0b;
+            --radius: 8px;
+            --shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background-color: var(--color-bg);
+            color: var(--color-text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--color-primary) 0%, #1e40af 100%);
+            padding: 30px 0;
+            margin-bottom: 40px;
+            box-shadow: var(--shadow);
+        }
+
+        h1 {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 14px;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background-color: var(--color-surface);
+            border-radius: var(--radius);
+            padding: 24px;
+            box-shadow: var(--shadow);
+        }
+
+        .card h2 {
+            font-size: 20px;
+            margin-bottom: 16px;
+            color: var(--color-primary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            font-size: 14px;
+            color: var(--color-text-secondary);
+        }
+
+        input[type="text"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 12px;
+            background-color: rgba(15, 23, 42, 0.8);
+            border: 1px solid #334155;
+            border-radius: var(--radius);
+            color: var(--color-text);
+            font-family: inherit;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        textarea:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 120px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 20px;
+            background-color: var(--color-primary);
+            color: white;
+            border: none;
+            border-radius: var(--radius);
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background-color: var(--color-primary-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(37, 99, 235, 0.3);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background-color: #475569;
+        }
+
+        .btn-secondary:hover {
+            background-color: #64748b;
+        }
+
+        .voice-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .voice-item {
+            background-color: rgba(15, 23, 42, 0.8);
+            border: 2px solid #334155;
+            border-radius: var(--radius);
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .voice-item:hover {
+            border-color: var(--color-primary);
+            background-color: rgba(37, 99, 235, 0.1);
+        }
+
+        .voice-item.selected {
+            border-color: var(--color-success);
+            background-color: rgba(16, 185, 129, 0.1);
+        }
+
+        .voice-name {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 6px;
+        }
+
+        .voice-lang {
+            font-size: 12px;
+            color: var(--color-text-secondary);
+        }
+
+        .audio-preview {
+            margin-top: 12px;
+            padding: 12px;
+            background-color: rgba(15, 23, 42, 0.5);
+            border-radius: var(--radius);
+            display: none;
+        }
+
+        .audio-preview.active {
+            display: block;
+        }
+
+        audio {
+            width: 100%;
+            margin-top: 8px;
+        }
+
+        .status-message {
+            padding: 12px;
+            border-radius: var(--radius);
+            margin-bottom: 16px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .status-message.show {
+            display: block;
+        }
+
+        .status-message.success {
+            background-color: rgba(16, 185, 129, 0.2);
+            color: var(--color-success);
+            border: 1px solid rgba(16, 185, 129, 0.5);
+        }
+
+        .status-message.error {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: var(--color-error);
+            border: 1px solid rgba(239, 68, 68, 0.5);
+        }
+
+        .status-message.info {
+            background-color: rgba(59, 130, 246, 0.2);
+            color: #60a5fa;
+            border: 1px solid rgba(59, 130, 246, 0.5);
+        }
+
+        .video-preview {
+            width: 100%;
+            background-color: #000;
+            border-radius: var(--radius);
+            margin-top: 16px;
+        }
+
+        .preview-section {
+            margin-top: 30px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            border-bottom: 2px solid #334155;
+        }
+
+        .tab-btn {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            color: var(--color-text-secondary);
+            cursor: pointer;
+            font-weight: 600;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.3s;
+        }
+
+        .tab-btn.active {
+            color: var(--color-primary);
+            border-bottom-color: var(--color-primary);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background-color: #334155;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--color-primary), #0ea5e9);
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        .loader {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .download-section {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            background-color: rgba(16, 185, 129, 0.1);
+            border-radius: var(--radius);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .download-section.show {
+            display: block;
+        }
+
+        .download-btn {
+            background-color: var(--color-success);
+            font-size: 16px;
+            padding: 14px 28px;
+            margin-top: 12px;
+        }
+
+        .download-btn:hover {
+            background-color: #059669;
+        }
+
+        @media (max-width: 768px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+
+            h1 {
+                font-size: 24px;
+            }
+
+            .voice-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .spinner {
+            display: inline-block;
+            position: relative;
+            width: 20px;
+            height: 20px;
+        }
+
+        .spinner div {
+            box-sizing: border-box;
+            display: block;
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            margin: 2px;
+            border: 2px solid white;
+            border-radius: 50%;
+            animation: spinner 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+            border-color: white transparent transparent transparent;
+        }
+
+        .spinner div:nth-child(1) {
+            animation-delay: -0.36s;
+        }
+
+        .spinner div:nth-child(2) {
+            animation-delay: -0.24s;
+        }
+
+        .spinner div:nth-child(3) {
+            animation-delay: -0.12s;
+        }
+
+        @keyframes spinner {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>🎬 AI YouTube Shorts Generator</h1>
+            <p class="subtitle">Generate viral YouTube Shorts with AI narration, backgrounds, subtitles, and music</p>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="errorMessage" class="status-message"></div>
+        <div id="successMessage" class="status-message"></div>
+        <div id="infoMessage" class="status-message"></div>
+
+        <div class="main-grid">
+            <!-- Input Section -->
+            <div class="card">
+                <h2>📝 Script & Settings</h2>
+
+                <div class="form-group">
+                    <label for="prompt">Video Prompt</label>
+                    <textarea id="prompt" placeholder="Enter your video idea... e.g., 'Create a motivational short about overcoming challenges in life'"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="videoMood">Background Music Mood</label>
+                    <select id="videoMood">
+                        <option value="energetic">⚡ Energetic & Upbeat</option>
+                        <option value="calm">😌 Calm & Peaceful</option>
+                        <option value="cinematic">🎥 Cinematic & Epic</option>
+                        <option value="none">🔇 No Music</option>
+                    </select>
+                </div>
+
+                <button onclick="generateScript()" id="generateScriptBtn">Generate Script</button>
+            </div>
+
+            <!-- Voice Selection Section -->
+            <div class="card">
+                <h2>🎤 Voice Selection</h2>
+
+                <div class="form-group">
+                    <label>Select Voice</label>
+                    <div class="voice-grid" id="voiceGrid">
+                        <div class="voice-item" onclick="selectVoice('en-US-AvaNeural', this)">
+                            <div class="voice-name">Ava</div>
+                            <div class="voice-lang">English (US) - Female</div>
+                        </div>
+                        <div class="voice-item" onclick="selectVoice('en-US-GuyNeural', this)">
+                            <div class="voice-name">Guy</div>
+                            <div class="voice-lang">English (US) - Male</div>
+                        </div>
+                        <div class="voice-item" onclick="selectVoice('en-GB-SoniaNeural', this)">
+                            <div class="voice-name">Sonia</div>
+                            <div class="voice-lang">English (UK) - Female</div>
+                        </div>
+                        <div class="voice-item" onclick="selectVoice('en-GB-RyanNeural', this)">
+                            <div class="voice-name">Ryan</div>
+                            <div class="voice-lang">English (UK) - Male</div>
+                        </div>
+                        <div class="voice-item" onclick="selectVoice('en-IN-NeerjaNeural', this)">
+                            <div class="voice-name">Neerja</div>
+                            <div class="voice-lang">English (India) - Female</div>
+                        </div>
+                        <div class="voice-item" onclick="selectVoice('en-IN-PrabhatNeural', this)">
+                            <div class="voice-name">Prabhat</div>
+                            <div class="voice-lang">English (India) - Male</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="speechRate">Speech Rate</label>
+                    <input type="text" id="speechRate" placeholder="Default: 1.0 (0.5 = slow, 1.5 = fast)" value="1.0">
+                </div>
+
+                <button onclick="previewVoice()" id="previewBtn">🔊 Preview Voice</button>
+
+                <div class="audio-preview" id="audioPreview">
+                    <p style="font-size: 12px; color: var(--color-text-secondary); margin-bottom: 8px;">Voice Sample:</p>
+                    <audio id="previewAudio" controls style="width: 100%;"></audio>
+                </div>
+            </div>
+        </div>
+
+        <!-- Preview & Generation Section -->
+        <div class="card preview-section">
+            <h2>⚙️ Generation & Preview</h2>
+
+            <div class="tabs">
+                <button class="tab-btn active" onclick="switchTab('script')">Generated Script</button>
+                <button class="tab-btn" onclick="switchTab('preview')">Video Preview</button>
+            </div>
+
+            <div id="scriptTab" class="tab-content active">
+                <div id="scriptContent" style="background-color: rgba(15, 23, 42, 0.8); padding: 16px; border-radius: var(--radius); min-height: 200px; max-height: 400px; overflow-y: auto; color: var(--color-text-secondary); font-family: monospace; line-height: 1.8;">
+                    <p style="color: var(--color-text-secondary);">Script will appear here after generation...</p>
+                </div>
+                <button onclick="generateVideo()" id="generateVideoBtn" style="margin-top: 16px;">Generate Video (4K)</button>
+                <div class="progress-bar" id="progressBar" style="display: none; margin-top: 16px;">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <p id="progressText" style="margin-top: 8px; font-size: 14px; display: none;"></p>
+            </div>
+
+            <div id="previewTab" class="tab-content">
+                <video id="videoPreview" class="video-preview" controls style="display: none;"></video>
+                <p id="previewPlaceholder" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">
+                    Video preview will appear here after generation...
+                </p>
+                <div class="download-section" id="downloadSection">
+                    <p style="margin-bottom: 12px;">✅ Video ready for download!</p>
+                    <button class="download-btn" onclick="downloadVideo()">⬇️ Download 4K Video</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- API Status -->
+        <div style="margin-top: 30px; padding: 16px; background-color: var(--color-surface); border-radius: var(--radius); font-size: 13px; color: var(--color-text-secondary);">
+            <p><strong>ℹ️ Free APIs Used:</strong> Edge-TTS (Microsoft) • Pexels Videos • HuggingFace Inference • Freepik/Unsplash Fallback</p>
+            <p style="margin-top: 8px;"><strong>Resolution:</strong> 4K (2160×3840) • <strong>Format:</strong> YouTube Shorts (9:16)</p>
+        </div>
+    </div>
+
+    <script>
+        let selectedVoice = 'en-US-AvaNeural';
+        let generatedScript = '';
+        let generatedVideoPath = '';
+
+        function showMessage(message, type) {
+            const msgElements = {
+                error: document.getElementById('errorMessage'),
+                success: document.getElementById('successMessage'),
+                info: document.getElementById('infoMessage')
+            };
+
+            msgElements[type].textContent = message;
+            msgElements[type].classList.add('show', type);
+
+            setTimeout(() => {
+                msgElements[type].classList.remove('show');
+            }, 5000);
+        }
+
+        function selectVoice(voiceId, element) {
+            document.querySelectorAll('.voice-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            element.classList.add('selected');
+            selectedVoice = voiceId;
+            showMessage(`✓ Voice "${voiceId.split('-')[2]}" selected`, 'success');
+        }
+
+        async function generateScript() {
+            const prompt = document.getElementById('prompt').value;
+            if (!prompt.trim()) {
+                showMessage('Please enter a video prompt', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('generateScriptBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner"><div></div><div></div><div></div><div></div></div> Generating...';
+
+            try {
+                const response = await fetch('/api/generate-script', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt })
+                });
+
+                if (!response.ok) throw new Error('Failed to generate script');
+
+                const data = await response.json();
+                generatedScript = data.script;
+                document.getElementById('scriptContent').textContent = generatedScript;
+                showMessage('✓ Script generated successfully!', 'success');
+            } catch (error) {
+                showMessage('Error: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Generate Script';
+            }
+        }
+
+        async function previewVoice() {
+            if (!generatedScript) {
+                showMessage('Generate script first', 'error');
+                return;
+            }
+
+            const rate = parseFloat(document.getElementById('speechRate').value) || 1.0;
+            const btn = document.getElementById('previewBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<div class="loader"></div>Generating preview...';
+
+            try {
+                const response = await fetch('/api/preview-voice', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: generatedScript.substring(0, 100),
+                        voice: selectedVoice,
+                        rate
+                    })
+                });
+
+                if (!response.ok) throw new Error('Failed to preview voice');
+
+                const blob = await response.blob();
+                const audioUrl = URL.createObjectURL(blob);
+                document.getElementById('previewAudio').src = audioUrl;
+                document.getElementById('audioPreview').classList.add('active');
+                showMessage('✓ Voice preview ready!', 'success');
+            } catch (error) {
+                showMessage('Error: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🔊 Preview Voice';
+            }
+        }
+
+        async function generateVideo() {
+            if (!generatedScript) {
+                showMessage('Generate script first', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('generateVideoBtn');
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+
+            btn.disabled = true;
+            progressBar.style.display = 'block';
+            progressText.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/generate-video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        script: generatedScript,
+                        voice: selectedVoice,
+                        mood: document.getElementById('videoMood').value,
+                        rate: parseFloat(document.getElementById('speechRate').value) || 1.0
+                    })
+                });
+
+                if (!response.ok) throw new Error('Failed to generate video');
+
+                const reader = response.body.getReader();
+                let receivedLength = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    receivedLength += value.length;
+                    const progress = (receivedLength / 1000000) * 100; // Estimate based on download
+                    document.getElementById('progressFill').style.width = Math.min(progress, 95) + '%';
+                    progressText.textContent = 'Processing: ' + Math.min(Math.floor(progress), 95) + '%';
+                }
+
+                const data = await response.json();
+                generatedVideoPath = data.videoPath;
+                document.getElementById('videoPreview').src = generatedVideoPath;
+                document.getElementById('videoPreview').style.display = 'block';
+                document.getElementById('previewPlaceholder').style.display = 'none';
+                document.getElementById('downloadSection').classList.add('show');
+                document.getElementById('progressFill').style.width = '100%';
+                progressText.textContent = 'Complete! ✓';
+
+                showMessage('✓ Video generated successfully!', 'success');
+                switchTab('preview');
+            } catch (error) {
+                showMessage('Error: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                    progressText.style.display = 'none';
+                }, 2000);
+            }
+        }
+
+        function downloadVideo() {
+            if (!generatedVideoPath) {
+                showMessage('No video generated yet', 'error');
+                return;
+            }
+            const a = document.createElement('a');
+            a.href = generatedVideoPath;
+            a.download = 'youtube_short_4k.mp4';
+            a.click();
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            document.getElementById(tabName + 'Tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+    </script>
+</body>
+</html>
