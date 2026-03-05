@@ -5,15 +5,14 @@ services:
     region: oregon          # change to: frankfurt, singapore, ohio, virginia
     plan: starter           # starter = $7/mo  |  standard = $25/mo (more RAM, faster render)
 
-    # Install FFmpeg before pip packages
-    buildCommand: |
-      apt-get update && apt-get install -y ffmpeg
-      pip install -r requirements.txt
+    # sudo is required for apt-get on Render's build environment
+    buildCommand: sudo apt-get update && sudo apt-get install -y ffmpeg && pip install -r requirements.txt
 
     startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --timeout 300
 
-    # Writable temp storage for generated videos
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.8"           # 3.14 is too new — use stable 3.11
       - key: OUTPUT_DIR
         value: /tmp/shorts-output
       - key: ALLOWED_ORIGINS
@@ -22,8 +21,5 @@ services:
         sync: false
       - key: PEXELS_API_KEY
         sync: false
-      - key: PYTHON_VERSION
-        value: "3.11.0"
 
-    # Health check — Render will restart the service if this fails
-    healthCheckPath: /
+    healthCheckPath: /health
