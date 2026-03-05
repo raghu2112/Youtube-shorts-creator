@@ -132,6 +132,103 @@ LANG_NAMES = {
 }
 
 # ───────────────────────────────────────────────
+# Caption styles & placements
+# ───────────────────────────────────────────────
+# ASS colour format: &HAABBGGRR  (alpha, blue, green, red — reversed from HTML)
+CAPTION_STYLES = {
+    "box": {
+        "label": "📦 Box",
+        "desc":  "White text · dark box",
+        # White text on a semi-transparent black rectangle — most readable
+        "primary":     "&H00FFFFFF",
+        "secondary":   "&H000000FF",
+        "outline_col": "&H00000000",
+        "back_col":    "&HAA000000",
+        "bold": -1, "border_style": 3, "outline": 0, "shadow": 6,
+        "fontsize": 72,
+    },
+    "classic": {
+        "label": "✨ Classic",
+        "desc":  "White · drop shadow",
+        "primary":     "&H00FFFFFF",
+        "secondary":   "&H000000FF",
+        "outline_col": "&H00000000",
+        "back_col":    "&H00000000",
+        "bold": -1, "border_style": 1, "outline": 3, "shadow": 5,
+        "fontsize": 72,
+    },
+    "neon": {
+        "label": "💜 Neon",
+        "desc":  "White · purple glow",
+        # White text with a vivid purple/magenta glow outline
+        "primary":     "&H00FFFFFF",
+        "secondary":   "&H000000FF",
+        "outline_col": "&H00FF52BE",   # magenta glow  (BGR: BE 52 FF)
+        "back_col":    "&H00000000",
+        "bold": -1, "border_style": 1, "outline": 5, "shadow": 10,
+        "fontsize": 74,
+    },
+    "outlined": {
+        "label": "⬛ Outlined",
+        "desc":  "White · thick outline",
+        "primary":     "&H00FFFFFF",
+        "secondary":   "&H000000FF",
+        "outline_col": "&H00000000",
+        "back_col":    "&H00000000",
+        "bold": -1, "border_style": 1, "outline": 7, "shadow": 0,
+        "fontsize": 76,
+    },
+    "minimal": {
+        "label": "🔤 Minimal",
+        "desc":  "Small · clean · subtle",
+        "primary":     "&H00FFFFFF",
+        "secondary":   "&H000000FF",
+        "outline_col": "&H80000000",
+        "back_col":    "&H00000000",
+        "bold": 0, "border_style": 1, "outline": 2, "shadow": 2,
+        "fontsize": 58,
+    },
+    "tiktok": {
+        "label": "🔥 TikTok",
+        "desc":  "Yellow · bold · big",
+        # Bright yellow like viral TikTok captions
+        "primary":     "&H0000FFFF",   # yellow (BGR: 00 FF FF)
+        "secondary":   "&H000000FF",
+        "outline_col": "&H00000000",
+        "back_col":    "&H00000000",
+        "bold": -1, "border_style": 1, "outline": 5, "shadow": 0,
+        "fontsize": 82,
+    },
+    "cinematic": {
+        "label": "🎬 Cinematic",
+        "desc":  "Cream · elegant · italic",
+        # Warm cream italic — documentary / film style
+        "primary":     "&H00D0E8FF",   # cream (BGR: D0 E8 FF)
+        "secondary":   "&H000000FF",
+        "outline_col": "&H00000000",
+        "back_col":    "&H00000000",
+        "bold": 0, "border_style": 1, "outline": 3, "shadow": 4,
+        "fontsize": 68, "italic": -1,
+    },
+    "fire": {
+        "label": "🔴 Fire",
+        "desc":  "Orange-red · high energy",
+        "primary":     "&H000052FF",   # orange-red (BGR: 00 52 FF)
+        "secondary":   "&H000000FF",
+        "outline_col": "&H00000000",
+        "back_col":    "&H00000000",
+        "bold": -1, "border_style": 1, "outline": 5, "shadow": 0,
+        "fontsize": 78,
+    },
+}
+
+CAPTION_PLACEMENTS = {
+    "bottom": {"label": "⬇ Bottom", "alignment": 2, "margin_v": 90},
+    "center": {"label": "⬛ Center", "alignment": 5, "margin_v": 0},
+    "top":    {"label": "⬆ Top",    "alignment": 8, "margin_v": 90},
+}
+
+# ───────────────────────────────────────────────
 # Request models
 # ───────────────────────────────────────────────
 class ScriptRequest(BaseModel):
@@ -150,7 +247,9 @@ class GenerateRequest(BaseModel):
     mood: str = "motivational"
     length_seconds: int = 30
     show_captions: bool = True
-    topic: str = ""          # used for Pexels search
+    topic: str = ""
+    caption_style: str = "box"
+    caption_placement: str = "bottom"
 
 class GenerateResponse(BaseModel):
     status: str
@@ -506,37 +605,54 @@ def _seconds_to_ass(t: float) -> str:
     return f"{h}:{m:02d}:{s:06.3f}"  # e.g. 0:00:03.250
 
 def _write_ass(sentences: list, duration: float, out: Path,
-               font_name: str = "Arial", font_size: int = 72) -> None:
+               font_name: str = "Arial", font_size: int = 72,
+               style_id: str = "box", placement_id: str = "bottom") -> None:
     """
-    Write an ASS subtitle file for all captions.
-    Each caption is centred, has a semi-transparent black box, white text,
-    and fades in/out over 250 ms.  libass renders this in one GPU-friendly pass.
+    Write an ASS subtitle file with the chosen visual style and placement.
+    Supports 8 styles × 3 placements configured via CAPTION_STYLES / CAPTION_PLACEMENTS.
     """
     n       = len(sentences)
     seg     = duration / n
-    fade_ms = min(250, int(seg * 150))   # 250 ms max fade
+    fade_ms = min(250, int(seg * 150))
 
-    header = f"""\
-[Script Info]
-ScriptType: v4.00+
-PlayResX: {VIDEO_WIDTH}
-PlayResY: {VIDEO_HEIGHT}
-WrapStyle: 1
-ScaledBorderAndShadow: yes
+    s  = CAPTION_STYLES.get(style_id,     CAPTION_STYLES["box"])
+    p  = CAPTION_PLACEMENTS.get(placement_id, CAPTION_PLACEMENTS["bottom"])
 
-[V4+ Styles]
-Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-Style: Cap,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&HAA000000,-1,0,0,0,100,100,2,0,3,0,6,5,80,80,80,1
+    fs       = s.get("fontsize", font_size)
+    bold     = s.get("bold", -1)
+    italic   = s.get("italic", 0)
+    bstyle   = s.get("border_style", 3)
+    outline  = s.get("outline", 0)
+    shadow   = s.get("shadow", 6)
+    align    = p["alignment"]
+    margin_v = p["margin_v"]
 
-[Events]
-Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-"""
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {VIDEO_WIDTH}\n"
+        f"PlayResY: {VIDEO_HEIGHT}\n"
+        "WrapStyle: 1\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,"
+        "OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,"
+        "ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
+        "Alignment,MarginL,MarginR,MarginV,Encoding\n"
+        f"Style: Cap,{font_name},{fs},"
+        f"{s['primary']},{s['secondary']},{s['outline_col']},{s['back_col']},"
+        f"{bold},{italic},0,0,"
+        f"100,100,2,0,{bstyle},{outline},{shadow},"
+        f"{align},60,60,{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
+    )
+
     events = []
     for i, raw in enumerate(sentences):
         t0  = i * seg
         t1  = t0 + seg
         txt = _ass_escape(raw)
-        # ASS fade tag: \fad(fade_in_ms, fade_out_ms)
         tag = f"{{\\fad({fade_ms},{fade_ms})}}"
         events.append(
             f"Dialogue: 0,{_seconds_to_ass(t0)},{_seconds_to_ass(t1)},"
@@ -572,7 +688,8 @@ def _ffmpeg_escape_path(p) -> str:
 
 
 def build_video(sentences, audio_path, output_path, duration, mood,
-                show_captions, bg_path=None):
+                show_captions, bg_path=None,
+                caption_style="box", caption_placement="bottom"):
     """
     YouTube-Shorts-style renderer — pure FFmpeg, no per-frame Python.
 
@@ -595,7 +712,8 @@ def build_video(sentences, audio_path, output_path, duration, mood,
     # ── Write ASS subtitle file ───────────────────────────────────────
     if show_captions and sentences:
         font_name  = _find_font_name()
-        _write_ass(sentences, duration, ass_path, font_name=font_name)
+        _write_ass(sentences, duration, ass_path, font_name=font_name,
+                   style_id=caption_style, placement_id=caption_placement)
         # Use ONLY the bare filename — FFmpeg's cwd will be work_dir
         ass_filter = "ass=" + ass_fname
     else:
@@ -687,6 +805,20 @@ async def get_voices():
 async def get_moods():
     return {"moods": [{"id":k,"label":v["label"]} for k,v in MOODS.items()]}
 
+@app.get("/caption-styles")
+async def get_caption_styles():
+    return {"styles": [
+        {"id": k, "label": v["label"], "desc": v["desc"]}
+        for k, v in CAPTION_STYLES.items()
+    ]}
+
+@app.get("/caption-placements")
+async def get_caption_placements():
+    return {"placements": [
+        {"id": k, "label": v["label"]}
+        for k, v in CAPTION_PLACEMENTS.items()
+    ]}
+
 @app.post("/voice-preview")
 async def voice_preview(req: VoicePreviewRequest):
     valid = {v["id"] for v in VOICES}
@@ -767,6 +899,7 @@ async def generate_video(req: GenerateRequest):
             build_video, req.script, audio_path, video_path,
             duration, req.mood, req.show_captions,
             bg_path if has_bg else None,
+            req.caption_style, req.caption_placement,
         )
         await loop.run_in_executor(None, fn)  # runs sync FFmpeg in thread, keeps server responsive
     except Exception as e:
