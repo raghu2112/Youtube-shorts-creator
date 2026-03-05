@@ -21,8 +21,8 @@ from pydantic import BaseModel
 # ╔══════════════════════════════════════════════╗
 # ║         SET YOUR API KEYS HERE               ║
 # ╚══════════════════════════════════════════════╝
-ANTHROPIC_API_KEY = "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"   # https://console.anthropic.com
-PEXELS_API_KEY    = "siOJkQZDrixx22IYFoPclaGJXNbIPO8P8VUmesZUf3ykzheZ5RyPu2vt"       # https://www.pexels.com/api
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "your-anthropic-key-here")
+PEXELS_API_KEY    = os.environ.get("PEXELS_API_KEY",    "your-pexels-key-here")
 # ═══════════════════════════════════════════════
 
 BASE_DIR   = Path(__file__).parent
@@ -972,3 +972,4 @@ if __name__ == "__main__":
             "--worker-class","uvicorn.workers.UvicornWorker",
             "--timeout","300","--access-logfile","-","--error-logfile","-",
         ], check=True)
+
