@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AI Shorts Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#05050f;--s1:#0a0a1e;--s2:#0f0f28;
+  --border:rgba(255,255,255,.07);--border2:rgba(255,255,255,.12);
+  --v1:#7b52ff;--v2:#be52ff;--v3:#ff52a8;
+  --c1:#00d4ff;--c2:#00ffaa;
+  --text:#f2f2ff;--dim:#8888b8;--faint:#44446a;
+  --red:#ff4060;--gold:#ffb84d;--green:#00e090;
+  --r:10px;--r2:16px;--r3:22px;
+  --font:'Inter',sans-serif;--head:'Space Grotesk',sans-serif;--mono:'JetBrains Mono',monospace;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100vh;overflow-x:hidden;line-height:1.6;font-size:14px}
+.bg-fx{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.orb{position:absolute;border-radius:50%;filter:blur(90px);animation:drift 22s ease-in-out infinite}
+.o1{width:700px;height:700px;background:radial-gradient(circle,rgba(123,82,255,.14),transparent 70%);top:-300px;left:-200px}
+.o2{width:500px;height:500px;background:radial-gradient(circle,rgba(255,82,168,.12),transparent 70%);bottom:-200px;right:-150px;animation-delay:-8s}
+.o3{width:400px;height:400px;background:radial-gradient(circle,rgba(0,212,255,.08),transparent 70%);top:45%;right:10%;animation-delay:-15s}
+@keyframes drift{0%,100%{transform:translate(0,0)}33%{transform:translate(30px,-25px)}66%{transform:translate(-20px,40px)}}
+.grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:52px 52px}
+.page{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:0 20px 80px}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 0 28px;border-bottom:1px solid var(--border);margin-bottom:36px}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-icon{width:40px;height:40px;background:linear-gradient(135deg,var(--v1),var(--v3));border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:19px;box-shadow:0 0 20px rgba(123,82,255,.35)}
+.logo-title{font-family:var(--head);font-size:1.1rem;font-weight:800;letter-spacing:-.5px}
+.logo-sub{font-size:.68rem;color:var(--dim);margin-top:1px;font-family:var(--mono)}
+.status{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:.7rem;color:var(--dim)}
+.sdot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2.2s infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.75)}}
+.studio{display:grid;grid-template-columns:1fr 360px;gap:18px;align-items:start}
+@media(max-width:880px){.studio{grid-template-columns:1fr}}
+.panel{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);overflow:hidden;position:relative;margin-bottom:14px}
+.panel::after{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent 5%,var(--v1) 35%,var(--v2) 65%,transparent 95%);opacity:.4;pointer-events:none}
+.ph{display:flex;align-items:center;justify-content:space-between;padding:18px 22px 14px}
+.ph-left{display:flex;align-items:center;gap:10px}
+.step-num{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--v1),var(--v2));display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:.68rem;font-weight:500;color:#fff;flex-shrink:0}
+.ph-title{font-family:var(--head);font-size:.82rem;font-weight:700}
+.pb{padding:0 22px 22px}
+.field{margin-bottom:16px}.field:last-child{margin-bottom:0}
+.flabel{display:block;font-size:.68rem;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+textarea,select,input{width:100%;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:var(--r2);color:var(--text);font-family:var(--font);font-size:.88rem;padding:11px 14px;outline:none;transition:border-color .2s,box-shadow .2s;appearance:none;-webkit-appearance:none}
+textarea{resize:vertical;min-height:80px;line-height:1.65}
+textarea::placeholder,input::placeholder{color:var(--faint)}
+textarea:focus,select:focus,input:focus{border-color:var(--v1);box-shadow:0 0 0 3px rgba(123,82,255,.1)}
+select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='%2344446a' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px;cursor:pointer}
+select option,select optgroup{background:var(--s2);color:var(--text)}
+.charcount{font-family:var(--mono);font-size:.65rem;color:var(--faint);text-align:right;margin-top:5px}
+.charcount.warn{color:var(--gold)}
+.mood-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+@media(max-width:600px){.mood-grid{grid-template-columns:repeat(2,1fr)}}
+.mood-card{padding:10px 6px;background:rgba(255,255,255,.04);border:1.5px solid var(--border);border-radius:var(--r2);cursor:pointer;text-align:center;transition:all .15s;user-select:none}
+.mood-card:hover{border-color:var(--border2);background:rgba(255,255,255,.07)}
+.mood-card.on{border-color:var(--v1);background:rgba(123,82,255,.12);box-shadow:0 0 0 1px var(--v1) inset}
+.mood-emoji{font-size:1.4rem;display:block;margin-bottom:4px;line-height:1}
+.mood-name{font-size:.65rem;font-weight:600;color:var(--dim);line-height:1.2}
+.mood-card.on .mood-name{color:var(--text)}
+.len-tabs{display:flex;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;height:40px}
+.len-tab{flex:1;background:transparent;border:none;color:var(--dim);font-family:var(--head);font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:3px}
+.len-tab .s{font-size:.7rem;opacity:.6}
+.len-tab.on{background:linear-gradient(135deg,var(--v1),var(--v2));color:#fff}
+.len-tab:hover:not(.on){background:rgba(255,255,255,.07);color:var(--text)}
+.voice-row{display:flex;gap:8px;align-items:stretch}
+.voice-row select{flex:1}
+.prev-btn{display:flex;align-items:center;gap:5px;padding:0 14px;background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.25);border-radius:var(--r2);color:var(--c1);font-family:var(--font);font-size:.8rem;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap;flex-shrink:0}
+.prev-btn:hover{background:rgba(0,212,255,.16);box-shadow:0 0 14px rgba(0,212,255,.2)}
+.prev-btn:disabled{opacity:.4;cursor:not-allowed}
+.audio-box{display:none;margin-top:10px;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.18);border-radius:var(--r);padding:10px 14px;align-items:center;gap:10px}
+.audio-box.show{display:flex}
+.audio-box audio{flex:1;height:28px}
+.audio-lbl{font-size:.7rem;color:var(--c1);font-family:var(--mono);white-space:nowrap}
+.tgroup{background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden}
+.trow{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;border-bottom:1px solid var(--border)}
+.trow:last-child{border-bottom:none}
+.trow-left{display:flex;align-items:center;gap:9px;font-size:.82rem;color:var(--dim)}
+.ticon{font-size:14px;width:20px;text-align:center;flex-shrink:0}
+.badge{font-family:var(--mono);font-size:.62rem;padding:3px 9px;border-radius:20px;white-space:nowrap}
+.bg{background:rgba(0,224,144,.1);color:var(--green);border:1px solid rgba(0,224,144,.2)}
+.bb{background:rgba(0,212,255,.1);color:var(--c1);border:1px solid rgba(0,212,255,.2)}
+.bv{background:rgba(123,82,255,.12);color:var(--v2);border:1px solid rgba(190,82,255,.25)}
+.by{background:rgba(255,184,77,.1);color:var(--gold);border:1px solid rgba(255,184,77,.2)}
+.sw{position:relative;width:42px;height:23px;flex-shrink:0}
+.sw input{opacity:0;width:0;height:0;position:absolute}
+.sw-t{position:absolute;inset:0;background:rgba(255,255,255,.1);border-radius:23px;cursor:pointer;transition:.22s;border:1px solid rgba(255,255,255,.1)}
+.sw-t::before{content:'';position:absolute;height:17px;width:17px;left:2px;bottom:2px;background:rgba(255,255,255,.5);border-radius:50%;transition:.22s}
+.sw input:checked+.sw-t{background:var(--v1);border-color:transparent}
+.sw input:checked+.sw-t::before{transform:translateX(19px);background:#fff}
+.sbox{background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;min-height:80px;max-height:340px;overflow-y:auto}
+.sline{display:flex;gap:10px;padding:9px 14px;border-bottom:1px solid rgba(255,255,255,.04);transition:background .12s}
+.sline:last-child{border-bottom:none}
+.sline:hover{background:rgba(255,255,255,.02)}
+.sl-n{font-family:var(--mono);font-size:.62rem;color:var(--faint);min-width:16px;margin-top:4px;flex-shrink:0;text-align:right}
+.sl-i{flex:1;background:transparent;border:none;outline:none;color:var(--text);font-family:var(--font);font-size:.84rem;line-height:1.55;resize:none;padding:0;min-height:20px}
+.sempty{text-align:center;padding:26px 18px;color:var(--faint);font-size:.82rem;line-height:1.9}
+.sempty strong{color:var(--dim)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:11px 20px;border-radius:var(--r2);font-family:var(--head);font-size:.86rem;font-weight:700;cursor:pointer;border:none;transition:all .16s;white-space:nowrap;line-height:1}
+.btn-p{background:linear-gradient(130deg,var(--v1) 0%,var(--v2) 50%,var(--v3) 100%);color:#fff;background-size:200%;box-shadow:0 4px 18px rgba(123,82,255,.28)}
+.btn-p:hover:not(:disabled){background-position:right center;box-shadow:0 6px 24px rgba(123,82,255,.44);transform:translateY(-1px)}
+.btn-g{background:rgba(255,255,255,.06);border:1px solid var(--border2);color:var(--dim)}
+.btn-g:hover{background:rgba(255,255,255,.1);color:var(--text)}
+.btn-c{background:transparent;border:1.5px solid var(--c1);color:var(--c1)}
+.btn-c:hover{background:rgba(0,212,255,.07);box-shadow:0 0 14px rgba(0,212,255,.15)}
+.btn:disabled{opacity:.35;cursor:not-allowed;transform:none !important;box-shadow:none !important}
+.btn-full{width:100%}.btn-xl{padding:15px 24px;font-size:.95rem}.btn-sm{padding:6px 12px;font-size:.73rem}
+.prog-wrap{display:none;margin-top:16px;animation:fu .3s ease}
+.prog-wrap.show{display:block}
+@keyframes fu{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.prog-hd{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.spin{width:30px;height:30px;flex-shrink:0;position:relative}
+.spin::before,.spin::after{content:'';position:absolute;inset:0;border-radius:50%;border:2.5px solid transparent}
+.spin::before{border-top-color:var(--v1);animation:sp 1s linear infinite}
+.spin::after{border-bottom-color:var(--v3);animation:sp .68s linear infinite reverse;inset:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.prog-info strong{display:block;font-size:.88rem;color:var(--text);font-family:var(--head)}
+.prog-info span{font-size:.74rem;color:var(--dim)}
+.pbar{height:3px;background:rgba(255,255,255,.07);border-radius:4px;overflow:hidden;margin-bottom:12px}
+.pfill{height:100%;background:linear-gradient(90deg,var(--v1),var(--v2),var(--v3));border-radius:4px;width:0%;transition:width .4s ease;background-size:200%;animation:shim 2s linear infinite}
+@keyframes shim{0%{background-position:200%}100%{background-position:-200%}}
+.strow{display:flex;gap:3px;margin-bottom:8px}
+.st{flex:1;height:3px;background:rgba(255,255,255,.07);border-radius:3px;transition:all .4s}
+.st.on{background:linear-gradient(90deg,var(--v1),var(--v2));animation:gl .9s ease-in-out infinite alternate}
+.st.done{background:var(--green)}
+@keyframes gl{from{box-shadow:none}to{box-shadow:0 0 8px var(--v2)}}
+.slrow{display:flex;gap:3px}
+.sl{flex:1;font-family:var(--mono);font-size:.6rem;color:var(--faint);text-align:center;transition:color .3s}
+.sl.on{color:var(--v2)}.sl.done{color:var(--green)}
+.err{display:none;margin-top:14px;background:rgba(255,64,96,.07);border:1px solid rgba(255,64,96,.22);border-radius:var(--r2);padding:13px 15px;animation:fu .25s ease}
+.err.show{display:flex;gap:10px;align-items:flex-start}
+.et{font-weight:700;color:var(--red);font-size:.82rem;margin-bottom:3px;font-family:var(--head)}
+.ed{color:rgba(255,100,130,.8);font-size:.76rem;line-height:1.55}
+.preview-panel{position:sticky;top:20px}
+.phone-outer{max-width:260px;margin:0 auto}
+.phone-frame{position:relative;background:linear-gradient(145deg,#12122a,#0a0a1e);border-radius:32px;border:2px solid rgba(255,255,255,.1);aspect-ratio:9/16;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.08)}
+.pnotch{position:absolute;top:10px;left:50%;transform:translateX(-50%);width:72px;height:5px;background:#000;border-radius:8px;z-index:10}
+.pscreen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 16px}
+.idle{text-align:center}
+.idle-ic{font-size:2.8rem;display:block;margin-bottom:12px;opacity:.22}
+.idle-tx{font-size:.72rem;color:var(--faint);line-height:1.75}
+.pvideo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none}
+.pglow{position:absolute;inset:0;border-radius:30px;pointer-events:none;box-shadow:inset 0 0 50px rgba(123,82,255,.1)}
+.vstats{display:flex;justify-content:space-between;margin-top:14px;gap:6px}
+.vs{flex:1;text-align:center;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:var(--r);padding:8px 4px}
+.vs-v{font-family:var(--mono);font-size:.8rem;font-weight:500;color:var(--text)}
+.vs-l{font-size:.58rem;color:var(--faint);text-transform:uppercase;letter-spacing:.8px;margin-top:2px}
+.dl-sec{margin-top:12px;display:none}
+.dl-sec.show{display:block}
+.ok-banner{display:flex;align-items:center;gap:9px;background:rgba(0,224,144,.07);border:1px solid rgba(0,224,144,.2);border-radius:var(--r2);padding:10px 14px;margin-bottom:10px;font-size:.8rem;color:var(--green);font-weight:600;font-family:var(--head)}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px}
+</style>
+</head>
+<body>
+<div class="bg-fx">
+  <div class="orb o1"></div><div class="orb o2"></div><div class="orb o3"></div>
+  <div class="grid"></div>
+</div>
+<div class="page">
+
+  <div class="topbar">
+    <div class="logo">
+      <div class="logo-icon">🎬</div>
+      <div>
+        <div class="logo-title">AI Shorts Studio</div>
+        <div class="logo-sub">Claude · edge-tts · Pexels · FFmpeg</div>
+      </div>
+    </div>
+    <div class="status"><div class="sdot"></div><span id="stxt">Ready</span></div>
+  </div>
+
+  <div class="studio">
+    <div>
+
+      <!-- 1. TOPIC -->
+      <div class="panel">
+        <div class="ph"><div class="ph-left"><div class="step-num">1</div><div class="ph-title">Topic</div></div></div>
+        <div class="pb">
+          <div class="field">
+            <label class="flabel" for="topic">What is your Short about?</label>
+            <textarea id="topic" placeholder="e.g. Why waking up at 5AM completely rewires your mindset and productivity forever…" maxlength="300" rows="3"></textarea>
+            <div class="charcount" id="cc">0 / 300</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. MOOD -->
+      <div class="panel">
+        <div class="ph"><div class="ph-left"><div class="step-num">2</div><div class="ph-title">Video Mood</div></div></div>
+        <div class="pb"><div class="mood-grid" id="moodGrid"></div></div>
+      </div>
+
+      <!-- 3. FORMAT + VOICE -->
+      <div class="panel">
+        <div class="ph"><div class="ph-left"><div class="step-num">3</div><div class="ph-title">Format &amp; Voice</div></div></div>
+        <div class="pb">
+          <div class="field">
+            <label class="flabel">Video Length</label>
+            <div class="len-tabs" id="lenTabs">
+              <button class="len-tab" onclick="setLen(15)" data-v="15">15<span class="s">s</span></button>
+              <button class="len-tab on" onclick="setLen(30)" data-v="30">30<span class="s">s</span></button>
+              <button class="len-tab" onclick="setLen(60)" data-v="60">60<span class="s">s</span></button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="flabel">Narrator Voice — 31 Neural Options</label>
+            <div class="voice-row">
+              <select id="voiceSel"></select>
+              <button class="prev-btn" id="prevBtn" onclick="previewVoice()">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Preview
+              </button>
+            </div>
+            <div class="audio-box" id="abox">
+              <span class="audio-lbl">🔊</span>
+              <audio id="paudio" controls></audio>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. CAPTIONS -->
+      <div class="panel">
+        <div class="ph"><div class="ph-left"><div class="step-num">4</div><div class="ph-title">Captions &amp; Visual</div></div></div>
+        <div class="pb">
+          <div class="tgroup">
+            <div class="trow">
+              <div class="trow-left"><span class="ticon">🔤</span>Animated Captions</div>
+              <label class="sw"><input type="checkbox" id="capToggle" checked/><span class="sw-t"></span></label>
+            </div>
+            <div class="trow" id="langRow">
+              <div class="trow-left"><span class="ticon">🌐</span>Caption Language</div>
+              <span class="badge bg" id="langBadge">🇺🇸 English</span>
+            </div>
+            <div class="trow">
+              <div class="trow-left"><span class="ticon">📹</span>Background</div>
+              <span class="badge bb" id="bgBadge">Gradient</span>
+            </div>
+            <div class="trow">
+              <div class="trow-left"><span class="ticon">🤖</span>Script Engine</div>
+              <span class="badge bv" id="engBadge">Template</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. SCRIPT -->
+      <div class="panel">
+        <div class="ph">
+          <div class="ph-left"><div class="step-num">5</div><div class="ph-title">Script Editor</div></div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="badge bv" id="srcBadge" style="display:none">template</span>
+            <button class="btn btn-g btn-sm" id="gsBtn" onclick="doScript()">✨ Generate Script</button>
+          </div>
+        </div>
+        <div class="pb">
+          <div class="sbox" id="sbox">
+            <div class="sempty" id="sempty">
+              <strong>No script yet.</strong><br>
+              Enter your topic, pick a mood, then click<br>
+              <strong style="color:var(--v2)">✨ Generate Script</strong><br>
+              <span style="font-size:.72rem">You can edit any line before rendering.</span>
+            </div>
+          </div>
+          <div style="margin-top:8px;font-size:.68rem;color:var(--faint)">✏️ Click any line to edit before generating the video.</div>
+        </div>
+      </div>
+
+      <!-- 6. GENERATE VIDEO -->
+      <div class="panel">
+        <div class="ph"><div class="ph-left"><div class="step-num">6</div><div class="ph-title">Generate Video</div></div></div>
+        <div class="pb">
+          <button class="btn btn-p btn-full btn-xl" id="gvBtn" onclick="doVideo()">⚡ Generate Video</button>
+          <div style="text-align:center;margin-top:8px;font-size:.68rem;color:var(--faint)">Ctrl+Enter · Renders in 30–90 seconds</div>
+
+          <div class="prog-wrap" id="pw">
+            <div class="prog-hd">
+              <div class="spin"></div>
+              <div class="prog-info">
+                <strong id="ptitle">Generating your Short…</strong>
+                <span id="psub">Please wait while we render your video</span>
+              </div>
+            </div>
+            <div class="pbar"><div class="pfill" id="pf"></div></div>
+            <div class="strow"><div class="st" id="s1"></div><div class="st" id="s2"></div><div class="st" id="s3"></div><div class="st" id="s4"></div></div>
+            <div class="slrow"><div class="sl" id="l1">Voice</div><div class="sl" id="l2">Background</div><div class="sl" id="l3">Rendering</div><div class="sl" id="l4">Done</div></div>
+          </div>
+
+          <div class="err" id="eb">
+            <div style="font-size:16px;margin-top:1px">⚠️</div>
+            <div><div class="et" id="etit">Error</div><div class="ed" id="edet"></div></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT: PHONE PREVIEW -->
+    <div class="preview-panel">
+      <div class="panel">
+        <div class="ph">
+          <div class="ph-left"><div class="ph-title">📱 Preview</div></div>
+          <span class="badge by" id="pvStatus">Waiting</span>
+        </div>
+        <div class="pb">
+          <div class="phone-outer">
+            <div class="phone-frame">
+              <div class="pnotch"></div>
+              <div class="pscreen">
+                <div class="idle" id="idleEl">
+                  <span class="idle-ic">🎬</span>
+                  <p class="idle-tx">Your short video<br>will appear here<br>after generation</p>
+                </div>
+                <video class="pvideo" id="pvid" controls muted playsinline></video>
+              </div>
+              <div class="pglow"></div>
+            </div>
+
+            <div class="vstats" id="vstats" style="display:none">
+              <div class="vs"><div class="vs-v" id="vd">—</div><div class="vs-l">Duration</div></div>
+              <div class="vs"><div class="vs-v" id="vc">—</div><div class="vs-l">Captions</div></div>
+              <div class="vs"><div class="vs-v" id="vz">—</div><div class="vs-l">Size</div></div>
+            </div>
+
+            <div class="dl-sec" id="dlSec">
+              <div class="ok-banner">✅ Video ready to download!</div>
+              <a class="btn btn-c btn-full" id="dlBtn" href="#" download style="text-decoration:none">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Download MP4
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+let mood='motivational', vidLen=30, lines=[], voices=[];
+const LANGS={en:'English',es:'Spanish',fr:'French',de:'German',hi:'Hindi',ja:'Japanese',zh:'Chinese',ko:'Korean',pt:'Portuguese',it:'Italian',ru:'Russian'};
+const FLAGS={en:'🇺🇸',es:'🇪🇸',fr:'🇫🇷',de:'🇩🇪',hi:'🇮🇳',ja:'🇯🇵',zh:'🇨🇳',ko:'🇰🇷',pt:'🇧🇷',it:'🇮🇹',ru:'🇷🇺'};
+
+(async function(){
+  await Promise.all([loadVoices(), loadMoods()]);
+  document.getElementById('topic').addEventListener('input',()=>{
+    const n=document.getElementById('topic').value.length;
+    const el=document.getElementById('cc');el.textContent=n+' / 300';el.classList.toggle('warn',n>240);
+  });
+  document.getElementById('capToggle').addEventListener('change',sync);
+  document.getElementById('voiceSel').addEventListener('change',()=>{sync();document.getElementById('abox').classList.remove('show');});
+})();
+
+async function loadVoices(){
+  try{
+    const d=await(await fetch('/voices')).json();voices=d.voices;
+    const sel=document.getElementById('voiceSel');sel.innerHTML='';
+    const g={};voices.forEach(v=>{if(!g[v.lang])g[v.lang]=[];g[v.lang].push(v);});
+    Object.entries(g).forEach(([lang,vs])=>{
+      const og=document.createElement('optgroup');
+      og.label=(FLAGS[lang]||'🌐')+'  '+(LANGS[lang]||lang.toUpperCase());
+      vs.forEach(v=>{const o=document.createElement('option');o.value=v.id;o.textContent=v.name+'  —  '+v.desc;og.appendChild(o);});
+      sel.appendChild(og);
+    });
+    sync();
+  }catch(e){console.error(e);}
+}
+
+async function loadMoods(){
+  try{
+    const d=await(await fetch('/moods')).json();
+    const grid=document.getElementById('moodGrid');grid.innerHTML='';
+    d.moods.forEach(m=>{
+      const p=m.label.split(' ');const em=p[0];const nm=p.slice(1).join(' ');
+      const div=document.createElement('div');div.className='mood-card'+(m.id===mood?' on':'');
+      div.innerHTML=`<span class="mood-emoji">${em}</span><div class="mood-name">${nm}</div>`;
+      div.onclick=()=>{mood=m.id;grid.querySelectorAll('.mood-card').forEach(c=>c.classList.remove('on'));div.classList.add('on');};
+      grid.appendChild(div);
+    });
+  }catch(e){console.error(e);}
+}
+
+function setLen(v){vidLen=v;document.querySelectorAll('.len-tab').forEach(b=>b.classList.toggle('on',parseInt(b.dataset.v)===v));}
+
+function sync(){
+  const vid=document.getElementById('voiceSel').value;
+  const v=voices.find(x=>x.id===vid);
+  if(v){document.getElementById('langBadge').textContent=(FLAGS[v.lang]||'🌐')+' '+(LANGS[v.lang]||v.lang);}
+  document.getElementById('langRow').style.opacity=document.getElementById('capToggle').checked?'1':'.35';
+}
+
+function setS(msg){document.getElementById('stxt').textContent=msg;}
+function showErr(t,d){document.getElementById('etit').textContent=t;document.getElementById('edet').textContent=d;document.getElementById('eb').classList.add('show');}
+function hideErr(){document.getElementById('eb').classList.remove('show');}
+
+async function previewVoice(){
+  const voiceId=document.getElementById('voiceSel').value;if(!voiceId)return;
+  const v=voices.find(x=>x.id===voiceId);const lang=v?v.lang:'en';
+  const btn=document.getElementById('prevBtn');btn.disabled=true;btn.textContent='⏳…';setS('Loading preview…');
+  try{
+    const res=await fetch('/voice-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice_id:voiceId,lang})});
+    if(!res.ok)throw new Error('Preview failed');
+    const blob=await res.blob();const url=URL.createObjectURL(blob);
+    const a=document.getElementById('paudio');a.src=url;
+    document.getElementById('abox').classList.add('show');
+    a.play().catch(()=>{});setS('Preview ready');
+  }catch(e){showErr('Preview Failed',e.message);setS('Error');}
+  finally{
+    btn.disabled=false;
+    btn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg> Preview';
+  }
+}
+
+async function doScript(){
+  const topic=document.getElementById('topic').value.trim();
+  if(!topic||topic.length<3){showErr('Topic Required','Enter a topic first.');return;}
+  hideErr();
+  const btn=document.getElementById('gsBtn');btn.disabled=true;btn.textContent='⏳ Generating…';setS('Generating script…');
+  const v=voices.find(x=>x.id===document.getElementById('voiceSel').value);
+  const lang=v?v.lang:'en';
+  try{
+    const res=await fetch('/api/generate-script',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({topic,mood,length_seconds:vidLen,language:lang})});
+    const data=await res.json();if(!res.ok)throw new Error(data.detail||'Failed');
+    lines=[...data.script];renderScript();
+    const isAI=data.source==='claude-ai';
+    const b=document.getElementById('srcBadge');b.style.display='inline-flex';b.textContent=isAI?'✨ Claude AI':'📋 Template';
+    document.getElementById('engBadge').textContent=isAI?'Claude AI':'Template';
+    setS('Script ready — '+lines.length+' lines');
+  }catch(e){showErr('Script Failed',e.message);setS('Error');}
+  finally{btn.disabled=false;btn.textContent='✨ Generate Script';}
+}
+
+function renderScript(){
+  const box=document.getElementById('sbox');
+  document.getElementById('sempty').style.display='none';
+  box.querySelectorAll('.sline').forEach(r=>r.remove());
+  lines.forEach((line,i)=>{
+    const row=document.createElement('div');row.className='sline';
+    row.innerHTML=`<span class="sl-n">${i+1}</span><textarea class="sl-i" rows="1" oninput="lines[${i}]=this.value;ar(this)">${line}</textarea>`;
+    box.appendChild(row);
+  });
+  box.querySelectorAll('.sl-i').forEach(ar);
+}
+function ar(el){el.style.height='auto';el.style.height=el.scrollHeight+'px';}
+
+// Real-time progress polling
+let pollTimer=null;
+function startProg(ts){
+  ['s1','s2','s3','s4'].forEach(id=>document.getElementById(id).className='st');
+  ['l1','l2','l3','l4'].forEach(id=>document.getElementById(id).className='sl');
+  document.getElementById('pf').style.width='5%';
+  document.getElementById('s1').className='st on';
+  document.getElementById('l1').className='sl on';
+  if(!ts) return;
+  clearInterval(pollTimer);
+  pollTimer=setInterval(async()=>{
+    try{
+      const r=await fetch('/progress/'+ts);
+      if(!r.ok) return;
+      const d=await r.json();
+      const pct=[0,25,55,80,100][d.step]||0;
+      document.getElementById('pf').style.width=pct+'%';
+      const ss=['s1','s2','s3','s4'],ls=['l1','l2','l3','l4'];
+      ss.forEach((id,i)=>{
+        const el=document.getElementById(id);const lel=document.getElementById(ls[i]);
+        if(i+1<d.step){el.className='st done';lel.className='sl done';}
+        else if(i+1===d.step){el.className='st on';lel.className='sl on';}
+        else{el.className='st';lel.className='sl';}
+      });
+      document.getElementById('psub').textContent=d.label||'Rendering…';
+      if(d.done) clearInterval(pollTimer);
+    }catch(e){}
+  },1500);
+}
+function stopProg(){
+  clearInterval(pollTimer);
+  ['s1','s2','s3','s4'].forEach(id=>document.getElementById(id).className='st done');
+  ['l1','l2','l3','l4'].forEach(id=>document.getElementById(id).className='sl done');
+  document.getElementById('pf').style.width='100%';
+}
+
+async function doVideo(){
+  hideErr();
+  if(lines.length<2){showErr('No Script','Click ✨ Generate Script first.');return;}
+  const btn=document.getElementById('gvBtn');btn.disabled=true;btn.innerHTML='⏳ Generating…';
+  document.getElementById('pw').classList.add('show');
+  document.getElementById('pvStatus').textContent='Rendering…';document.getElementById('pvStatus').className='badge by';
+  document.getElementById('dlSec').classList.remove('show');document.getElementById('vstats').style.display='none';
+  const vid=document.getElementById('pvid');vid.style.display='none';vid.src='';
+  document.getElementById('idleEl').style.display='block';
+  let renderTs='';startProg('');setS('Rendering video…');
+  try{
+    // Start render and begin polling for real-time progress
+    const res=await fetch('/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({script:lines,voice:document.getElementById('voiceSel').value,mood,
+        length_seconds:vidLen,show_captions:document.getElementById('capToggle').checked,
+        topic:document.getElementById('topic').value.trim()})});
+    const data=await res.json();stopProg();
+    if(!res.ok||data.status!=='success'){
+      showErr('Generation Failed',data.detail||data.message||'Unknown error.');
+      document.getElementById('pvStatus').textContent='Failed';document.getElementById('pvStatus').className='badge';
+      setS('Error');return;
+    }
+    // Extract timestamp from /download/1234567890 and start real polling
+    renderTs = (data.video_url||'').split('/').pop();
+    if(renderTs) startProg(renderTs);
+    const parts=data.message.split('·').map(s=>s.trim());
+    document.getElementById('vd').textContent=parts[0]||'—';
+    document.getElementById('vc').textContent=(parts[1]||'').replace(' captions','').trim()||'—';
+    document.getElementById('vz').textContent=parts[2]||'—';
+    const bgSrc=parts[3]||'gradient';
+    const topicVal=document.getElementById('topic').value.trim();
+    const bgLabel=bgSrc.includes('Pexels')
+      ? '📹 Pexels — '+topicVal.split(' ').slice(0,3).join(' ')
+      : '🎨 Gradient';
+    document.getElementById('bgBadge').textContent=bgLabel;
+    document.getElementById('bgBadge').className='badge '+(bgSrc.includes('Pexels')?'bg':'bb');
+    const url=data.video_url+'?t='+Date.now();
+    vid.src=url;vid.style.display='block';document.getElementById('idleEl').style.display='none';
+    vid.load();vid.play().catch(()=>{});
+    document.getElementById('dlBtn').href=data.video_url;
+    document.getElementById('dlBtn').download='short_'+Date.now()+'.mp4';
+    document.getElementById('vstats').style.display='flex';
+    document.getElementById('dlSec').classList.add('show');
+    document.getElementById('pvStatus').textContent='✓ Ready';document.getElementById('pvStatus').className='badge bg';
+    setS('Done — '+data.message);
+    if(window.innerWidth<880)document.querySelector('.preview-panel').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){
+    stopProg();showErr('Network Error',e.message||'Cannot reach server.');setS('Error');
+  }finally{
+    btn.disabled=false;btn.innerHTML='⚡ Generate Video';document.getElementById('pw').classList.remove('show');
+  }
+}
+
+document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter')doVideo();});
+</script>
+</body>
+</html>
