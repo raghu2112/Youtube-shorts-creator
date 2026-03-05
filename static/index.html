@@ -173,6 +173,16 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
 .cap-preview{position:relative;background:#111;border-radius:var(--r);overflow:hidden;height:72px;margin-bottom:14px;display:flex;align-items:center;justify-content:center}
 .cap-preview-bg{position:absolute;inset:0;background:linear-gradient(135deg,#1a1040,#0a1628);opacity:.9}
 .cap-preview-text{position:relative;z-index:1;font-size:.95rem;font-weight:700;pointer-events:none;transition:all .25s}
+
+/* ════════ MUSIC SLIDER ════════ */
+.music-row{display:flex;align-items:center;gap:10px;padding:10px 0 4px}
+.music-row label{font-size:.68rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--faint);white-space:nowrap;min-width:58px}
+.music-val{font-family:var(--mono);font-size:.72rem;color:var(--c1);min-width:38px;text-align:right}
+input[type=range]{flex:1;-webkit-appearance:none;appearance:none;height:4px;background:rgba(255,255,255,.1);border-radius:4px;outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;background:var(--c1);cursor:pointer;box-shadow:0 0 8px rgba(0,212,255,.4)}
+input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--c1);cursor:pointer;border:none}
+/* copy + share buttons */
+.action-row{display:flex;gap:8px;margin-top:10px}
 </style>
 </head>
 <body>
@@ -283,6 +293,18 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
               <div class="trow-left"><span class="ticon">🤖</span>Script Engine</div>
               <span class="badge bv" id="engBadge">Template</span>
             </div>
+            <div class="trow">
+              <div class="trow-left"><span class="ticon">🎵</span>Background Music</div>
+              <span class="badge bb" id="musicBadge">Checking…</span>
+            </div>
+          </div>
+
+          <!-- Music volume slider -->
+          <div class="music-row" id="musicRow">
+            <label>🔊 Music</label>
+            <input type="range" id="musicVol" min="0" max="100" value="20"
+              oninput="musicVolume=this.value;document.getElementById('musicVolVal').textContent=this.value==0?'Off':this.value+'%'"/>
+            <span class="music-val" id="musicVolVal">20%</span>
           </div>
         </div>
       </div>
@@ -294,9 +316,14 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
           <span class="badge bv" id="srcBadge" style="display:none">template</span>
         </div>
         <div class="pb">
-          <button class="btn btn-p btn-full btn-xl" id="gsBtn" onclick="doScript()" style="margin-bottom:14px;background:linear-gradient(130deg,var(--v1) 0%,var(--v2) 100%)">
-            ✨ Generate Script
-          </button>
+          <div style="display:flex;gap:8px;margin-bottom:14px">
+            <button class="btn btn-p btn-full btn-xl" id="gsBtn" onclick="doScript()" style="background:linear-gradient(130deg,var(--v1) 0%,var(--v2) 100%);flex:1">
+              ✨ Generate Script
+            </button>
+            <button class="btn btn-g" id="copyScriptBtn" onclick="copyScript()" title="Copy script to clipboard" style="padding:0 14px;flex-shrink:0;display:none">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
           <div class="sbox" id="sbox">
             <div class="sempty" id="sempty">
               <strong>No script yet.</strong><br>
@@ -366,15 +393,17 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
             </div>
 
             <div class="dl-sec" id="dlSec">
-              <div class="ok-banner">✅ Video ready to download!</div>
-              <a class="btn btn-c btn-full" id="dlBtn" href="#" download style="text-decoration:none">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                  <polyline points="7 10 12 15 17 10"/>
-                  <line x1="12" y1="15" x2="12" y2="3"/>
-                </svg>
-                Download MP4
-              </a>
+              <div class="ok-banner">✅ Video ready!</div>
+              <div class="action-row">
+                <a class="btn btn-c" id="dlBtn" href="#" download style="text-decoration:none;flex:1;justify-content:center">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Download
+                </a>
+                <button class="btn btn-g" id="shareBtn" onclick="shareVideo()" style="flex:1">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                  Share
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -386,12 +415,12 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
 
 <script>
 let mood='motivational', vidLen=30, lines=[], voices=[];
-let capStyle='box', capPlacement='bottom';
+let capStyle='box', capPlacement='bottom', musicVolume=20;
 const LANGS={en:'English',es:'Spanish',fr:'French',de:'German',hi:'Hindi',ja:'Japanese',zh:'Chinese',ko:'Korean',pt:'Portuguese',it:'Italian',ru:'Russian'};
 const FLAGS={en:'🇺🇸',es:'🇪🇸',fr:'🇫🇷',de:'🇩🇪',hi:'🇮🇳',ja:'🇯🇵',zh:'🇨🇳',ko:'🇰🇷',pt:'🇧🇷',it:'🇮🇹',ru:'🇷🇺'};
 
 (async function(){
-  await Promise.all([loadVoices(), loadMoods(), loadCaptionStyles()]);
+  await Promise.all([loadVoices(), loadMoods(), loadCaptionStyles(), loadMusicStatus()]);
   document.getElementById('topic').addEventListener('input',()=>{
     const n=document.getElementById('topic').value.length;
     const el=document.getElementById('cc');el.textContent=n+' / 300';el.classList.toggle('warn',n>240);
@@ -512,6 +541,86 @@ function updateCapPreview(){
   prev.style.paddingBottom = capPlacement==='bottom' ? '10px' : '0';
 }
 
+// ══════════════════════════════════════
+// Copy script to clipboard
+// ══════════════════════════════════════
+async function copyScript(){
+  if(!lines.length) return;
+  const text = lines.join('\n');
+  try{
+    await navigator.clipboard.writeText(text);
+    const btn = document.getElementById('copyScriptBtn');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '✅';
+    setTimeout(()=>btn.innerHTML=orig, 1800);
+  }catch(e){
+    // Fallback for browsers that block clipboard
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+}
+
+// ══════════════════════════════════════
+// Share video (Web Share API)
+// ══════════════════════════════════════
+async function shareVideo(){
+  const dlBtn = document.getElementById('dlBtn');
+  const url   = dlBtn.href;
+  if(!url || url==='#'){return;}
+  // Web Share API — works on mobile browsers (Chrome Android, Safari iOS)
+  if(navigator.share){
+    try{
+      await navigator.share({
+        title: 'My AI Short — ' + (document.getElementById('topic').value.trim()||'Generated'),
+        text:  'Check out this AI-generated YouTube Short!',
+        url:   window.location.origin + url,
+      });
+      return;
+    }catch(e){
+      if(e.name==='AbortError') return; // user cancelled — don't fallback
+    }
+  }
+  // Fallback: copy video URL to clipboard
+  try{
+    await navigator.clipboard.writeText(window.location.origin + url);
+    const btn = document.getElementById('shareBtn');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '🔗 Link copied!';
+    setTimeout(()=>btn.innerHTML=orig, 2200);
+  }catch(e){}
+}
+
+// ══════════════════════════════════════
+// Music status — show available tracks
+// ══════════════════════════════════════
+async function loadMusicStatus(){
+  try{
+    const d = await (await fetch('/music-status')).json();
+    const badge = document.getElementById('musicBadge');
+    const row   = document.getElementById('musicRow');
+    const avail = Object.values(d.tracks).filter(Boolean).length;
+    const total = Object.keys(d.tracks).length;
+    if(avail === 0){
+      badge.textContent = '⚠️ No tracks';
+      badge.className = 'badge by';
+      row.style.opacity = '.4';
+      row.style.pointerEvents = 'none';
+      document.getElementById('musicVol').value = 0;
+      musicVolume = 0;
+      document.getElementById('musicVolVal').textContent = 'Off';
+    } else {
+      badge.textContent = avail + '/' + total + ' moods';
+      badge.className = 'badge bg';
+    }
+  }catch(e){
+    const badge = document.getElementById('musicBadge');
+    if(badge) badge.textContent = 'N/A';
+  }
+}
+
 function setLen(v){vidLen=v;document.querySelectorAll('.len-tab').forEach(b=>b.classList.toggle('on',parseInt(b.dataset.v)===v));}
 
 function sync(){
@@ -566,6 +675,7 @@ async function doScript(){
 function renderScript(){
   const box=document.getElementById('sbox');
   document.getElementById('sempty').style.display='none';
+  document.getElementById('copyScriptBtn').style.display='';
   box.querySelectorAll('.sline').forEach(r=>r.remove());
   lines.forEach((line,i)=>{
     const row=document.createElement('div');row.className='sline';
@@ -628,7 +738,8 @@ async function doVideo(){
       body:JSON.stringify({script:lines,voice:document.getElementById('voiceSel').value,mood,
         length_seconds:vidLen,show_captions:document.getElementById('capToggle').checked,
         topic:document.getElementById('topic').value.trim(),
-        caption_style:capStyle, caption_placement:capPlacement})});
+        caption_style:capStyle, caption_placement:capPlacement,
+        music_volume:parseInt(musicVolume)})});
     const data=await res.json();stopProg();
     if(!res.ok||data.status!=='success'){
       showErr('Generation Failed',data.detail||data.message||'Unknown error.');
