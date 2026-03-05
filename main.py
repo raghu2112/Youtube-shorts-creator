@@ -4,7 +4,7 @@ Run: python main.py
 Open: http://127.0.0.1:8000
 """
 
-import os, sys, traceback, asyncio, shutil, subprocess
+import os, sys, traceback, asyncio, shutil, subprocess, logging
 import textwrap, time, random, math, functools, json
 from pathlib import Path
 from typing import Optional
@@ -12,28 +12,70 @@ from typing import Optional
 import httpx, numpy as np
 from gtts import gTTS
 from PIL import Image
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
 
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S")
+log = logging.getLogger("shorts")
+
 # ╔══════════════════════════════════════════════╗
-# ║         SET YOUR API KEYS HERE               ║
+# ║         API KEYS — set as env vars           ║
+# ║   ANTHROPIC_API_KEY  and  PEXELS_API_KEY     ║
 # ╚══════════════════════════════════════════════╝
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "your-anthropic-key-here")
 PEXELS_API_KEY    = os.environ.get("PEXELS_API_KEY",    "your-pexels-key-here")
 # ═══════════════════════════════════════════════
 
 BASE_DIR   = Path(__file__).parent
-OUTPUT_DIR = BASE_DIR / "output"
+# On Render (and most cloud platforms) the repo is read-only except /tmp
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(BASE_DIR / "output")))
 STATIC_DIR = BASE_DIR / "static"
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="AI Shorts Generator")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ── CORS — locked to your own domain in production ──────────────────
+# Set ALLOWED_ORIGINS env var to your Render URL, e.g.:
+#   https://ai-shorts-generator.onrender.com
+# Defaults to localhost only for local dev.
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+app.add_middleware(CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+
+# ── Rate limiter (slowapi) ───────────────────────────────────────────
+# /generate: max 5 renders per minute per IP  (protects Pexels + Anthropic quota)
+# /api/generate-script: max 20 per minute per IP
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ── Concurrent render gate ───────────────────────────────────────────
+# On Render Starter (512 MB) two simultaneous FFmpeg processes is the max.
+# Increase to 3 if you upgrade to Standard plan (2 GB).
+RENDER_SEMAPHORE = asyncio.Semaphore(2)
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# ── Music directory ──────────────────────────────────────────────────
+# Place royalty-free MP3s here named after moods:
+#   music/motivational.mp3, music/calm.mp3, music/horror.mp3 …
+# Free sources: https://pixabay.com/music  https://freemusicarchive.org
+# Any missing mood simply plays without background music.
+MUSIC_DIR = BASE_DIR / "music"
+MUSIC_DIR.mkdir(exist_ok=True)
 
 VIDEO_WIDTH  = 1080
 VIDEO_HEIGHT = 1920
@@ -250,6 +292,7 @@ class GenerateRequest(BaseModel):
     topic: str = ""
     caption_style: str = "box"
     caption_placement: str = "bottom"
+    music_volume: int = 20        # 0 = off, 1–100 = % of full volume
 
 class GenerateResponse(BaseModel):
     status: str
@@ -689,7 +732,8 @@ def _ffmpeg_escape_path(p) -> str:
 
 def build_video(sentences, audio_path, output_path, duration, mood,
                 show_captions, bg_path=None,
-                caption_style="box", caption_placement="bottom"):
+                caption_style="box", caption_placement="bottom",
+                music_path=None, music_volume=20):
     """
     YouTube-Shorts-style renderer — pure FFmpeg, no per-frame Python.
 
@@ -701,55 +745,82 @@ def build_video(sentences, audio_path, output_path, duration, mood,
 
     Pexels path   : full-bleed portrait video → slight dim → captions
     Gradient path : animated gradient PNG → captions
+    Music         : optional background track mixed at music_volume %
     Encode        : libx264 veryfast/ultrafast, ~10–25 s render time
     """
     cfg        = MOODS.get(mood, MOODS["motivational"])
     colors     = cfg["colors"]
-    work_dir   = Path(output_path).parent   # FFmpeg will run from here
-    ass_fname  = "subs.ass"                 # just the filename — no path needed
+    work_dir   = Path(output_path).parent
+    ass_fname  = "subs.ass"
     ass_path   = work_dir / ass_fname
 
-    # ── Write ASS subtitle file ───────────────────────────────────────
+    # ── ASS subtitle ─────────────────────────────────────────────────
     if show_captions and sentences:
         font_name  = _find_font_name()
         _write_ass(sentences, duration, ass_path, font_name=font_name,
                    style_id=caption_style, placement_id=caption_placement)
-        # Use ONLY the bare filename — FFmpeg's cwd will be work_dir
         ass_filter = "ass=" + ass_fname
     else:
         ass_filter = ""
 
     use_pexels = bool(bg_path and Path(bg_path).exists())
+    use_music  = bool(music_path and Path(music_path).exists() and music_volume > 0)
+
+    # ── Audio mixing ─────────────────────────────────────────────────
+    # With music:  voice (-1 dB) + music (-∞ to -20 dB) → amix → AAC
+    # Without:     voice straight through → AAC
+    if use_music:
+        vol = max(0.01, min(1.0, music_volume / 100))
+        # amix: input 0 = voice (weight 1), input 1 = music (weight = vol)
+        # duration=first means output length = voice length
+        audio_filter = (
+            f"[0:a]volume=1.0[v];"
+            f"[1:a]volume={vol:.3f},aloop=loop=-1:size=2e+09[m];"
+            f"[v][m]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+        )
+    else:
+        audio_filter = None
 
     if use_pexels:
-        # ── YouTube Shorts style ──────────────────────────────────────
-        # 1. Fill frame: scale + crop to exactly 1080×1920 (no black bars)
-        # 2. Slight brightness drop so white captions stay readable
-        # 3. Burn captions with libass
         scale_crop = (
             "scale={W}:{H}:force_original_aspect_ratio=increase,"
             "crop={W}:{H}"
         ).format(W=VIDEO_WIDTH, H=VIDEO_HEIGHT)
-        eq_filter  = "eq=brightness=-0.06:saturation=1.1"
-        vf_parts   = [scale_crop, eq_filter]
+        eq_filter = "eq=brightness=-0.06:saturation=1.1"
+        vf_parts  = [scale_crop, eq_filter]
         if ass_filter:
             vf_parts.append(ass_filter)
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-stream_loop", "-1",
-            "-i", str(bg_path),       # absolute path — fine on -i flag
-            "-i", str(audio_path),
-            "-vf", ",".join(vf_parts),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k",
-            "-t", str(duration), "-shortest",
-            "-movflags", "+faststart",
-            str(output_path),          # absolute path — fine as output arg
-        ]
+        if use_music:
+            cmd = [
+                "ffmpeg", "-y",
+                "-stream_loop", "-1", "-i", str(bg_path),
+                "-i", str(audio_path),
+                "-stream_loop", "-1", "-i", str(music_path),
+                "-filter_complex", audio_filter,
+                "-vf", ",".join(vf_parts),
+                "-map", "0:v", "-map", "[aout]",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-t", str(duration), "-shortest",
+                "-movflags", "+faststart",
+                str(output_path),
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y",
+                "-stream_loop", "-1", "-i", str(bg_path),
+                "-i", str(audio_path),
+                "-vf", ",".join(vf_parts),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-t", str(duration), "-shortest",
+                "-movflags", "+faststart",
+                str(output_path),
+            ]
     else:
-        # ── Gradient PNG fallback ─────────────────────────────────────
         grad_path = work_dir / "grad.png"
         _make_gradient_png(VIDEO_WIDTH, VIDEO_HEIGHT, colors, grad_path)
         vf_parts = []
@@ -757,31 +828,42 @@ def build_video(sentences, audio_path, output_path, duration, mood,
             vf_parts.append(ass_filter)
         vf_str = ",".join(vf_parts) if vf_parts else "null"
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-loop", "1",
-            "-framerate", str(FPS),
-            "-i", str(grad_path),
-            "-i", str(audio_path),
-            "-vf", vf_str,
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-            "-crf", "22", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k",
-            "-t", str(duration), "-shortest",
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
+        if use_music:
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-framerate", str(FPS), "-i", str(grad_path),
+                "-i", str(audio_path),
+                "-stream_loop", "-1", "-i", str(music_path),
+                "-filter_complex", audio_filter,
+                "-vf", vf_str,
+                "-map", "0:v", "-map", "[aout]",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+                "-crf", "22", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-t", str(duration), "-shortest",
+                "-movflags", "+faststart",
+                str(output_path),
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-framerate", str(FPS), "-i", str(grad_path),
+                "-i", str(audio_path),
+                "-vf", vf_str,
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+                "-crf", "22", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-t", str(duration), "-shortest",
+                "-movflags", "+faststart",
+                str(output_path),
+            ]
 
-    print("  FFmpeg: {} | captions={}".format(
-        "Pexels" if use_pexels else "gradient",
-        "on" if show_captions else "off"
-    ))
+    log.info("FFmpeg: %s | captions=%s | music=%s",
+             "Pexels" if use_pexels else "gradient",
+             "on" if show_captions else "off",
+             f"{music_volume}%" if use_music else "off")
     result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        cwd=str(work_dir),   # ← THIS is the key fix: FFmpeg finds subs.ass here
+        cmd, capture_output=True, text=True, timeout=300, cwd=str(work_dir),
     )
     if result.returncode != 0:
         raise RuntimeError("FFmpeg failed:\n" + result.stderr[-3000:])
@@ -796,6 +878,29 @@ async def serve_ui():
     if not html_file.exists():
         raise HTTPException(404, "static/index.html not found. Please create it.")
     return FileResponse(str(html_file))
+
+@app.get("/health")
+async def health():
+    """Render health check + quick status summary."""
+    ok_ff, ok_fp = check_ffmpeg()
+    return JSONResponse({
+        "status":   "ok",
+        "ffmpeg":   ok_ff,
+        "ffprobe":  ok_fp,
+        "claude":   ANTHROPIC_API_KEY != "your-anthropic-key-here",
+        "pexels":   PEXELS_API_KEY    != "your-pexels-key-here",
+        "voices":   len(VOICES),
+        "music_tracks": len(list(MUSIC_DIR.glob("*.mp3"))),
+    })
+
+@app.get("/music-status")
+async def music_status():
+    """Return which mood music tracks are available."""
+    available = {}
+    for mood_id in MOODS:
+        f = MUSIC_DIR / f"{mood_id}.mp3"
+        available[mood_id] = f.exists()
+    return {"tracks": available, "music_dir": str(MUSIC_DIR)}
 
 @app.get("/voices")
 async def get_voices():
@@ -840,7 +945,8 @@ async def voice_preview(req: VoicePreviewRequest):
                         headers={"Cache-Control": "no-cache"})
 
 @app.post("/api/generate-script")
-async def api_generate_script(req: ScriptRequest):
+@limiter.limit("20/minute")
+async def api_generate_script(req: ScriptRequest, request: Request):
     if not req.topic or len(req.topic.strip()) < 3:
         raise HTTPException(400, "Topic is too short.")
     use_claude = ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "your-anthropic-key-here"
@@ -854,12 +960,17 @@ async def api_generate_script(req: ScriptRequest):
     return {"status":"success","script":sentences,"source":"template"}
 
 @app.post("/generate", response_model=GenerateResponse)
-async def generate_video(req: GenerateRequest):
+@limiter.limit("5/minute")
+async def generate_video(req: GenerateRequest, request: Request):
     if not req.script or len(req.script) < 2:
         raise HTTPException(400, "Script needs at least 2 lines.")
     ok_ff,ok_fp = check_ffmpeg()
     if not ok_ff: raise HTTPException(503,"FFmpeg not found. Install from https://ffmpeg.org")
     if not ok_fp: raise HTTPException(503,"FFprobe not found. Ensure FFmpeg/bin is in PATH.")
+
+    # Block if 2 renders already in progress — queue the request
+    if RENDER_SEMAPHORE._value == 0:
+        log.warning("Render queue full — request queued from %s", request.client.host)
 
     length = max(10, min(65, req.length_seconds))
     ts = int(time.time()*1000)
@@ -871,11 +982,11 @@ async def generate_video(req: GenerateRequest):
     voice = req.voice if req.voice in valid else "en-US-1"
     full_text = " ".join(str(s) for s in req.script)
 
-    print(f"\n🎙  Voice: {voice}")
+    log.info("🎙  Voice: %s", voice)
     try:
         await make_audio(full_text, voice, audio_path)
     except Exception as e:
-        print(traceback.format_exc())
+        log.error(traceback.format_exc())
         raise HTTPException(500, f"Voice generation failed: {e}. Check internet connection.")
 
     if not audio_path.exists() or audio_path.stat().st_size < 500:
@@ -884,26 +995,36 @@ async def generate_video(req: GenerateRequest):
     try: duration = get_audio_duration(audio_path)
     except Exception: duration = max(len(req.script)*2.2, float(length))
     duration = max(duration, float(length)*0.8)
-    print(f"⏱  {duration:.1f}s")
+    log.info("⏱  %.1fs", duration)
 
     mood_query = MOODS.get(req.mood, MOODS["motivational"])["query"]
     topic_str  = req.topic.strip() if req.topic else " ".join(str(s) for s in req.script[:2])
-    print(f"🔎  Topic: '{topic_str[:60]}'")
+    log.info("🔎  Topic: '%s'", topic_str[:60])
     has_bg = await download_pexels(topic_str, mood_query, bg_path)
-    print(f"🎬  bg: {'Pexels ✅' if has_bg else 'gradient (Pexels unavailable)'}")
+    log.info("🎬  bg: %s", "Pexels ✅" if has_bg else "gradient")
 
-    print("🚀  Rendering with FFmpeg…")
+    # ── Background music ─────────────────────────────────────────────
+    music_path = MUSIC_DIR / f"{req.mood}.mp3"
+    if not music_path.exists():
+        music_path = MUSIC_DIR / "default.mp3"   # optional catch-all fallback
+    has_music = music_path.exists() and req.music_volume > 0
+    log.info("🎵  music: %s", f"{music_path.name} @ {req.music_volume}%" if has_music else "off")
+
+    log.info("🚀  Rendering…")
     try:
-        loop = asyncio.get_event_loop()
-        fn = functools.partial(
-            build_video, req.script, audio_path, video_path,
-            duration, req.mood, req.show_captions,
-            bg_path if has_bg else None,
-            req.caption_style, req.caption_placement,
-        )
-        await loop.run_in_executor(None, fn)  # runs sync FFmpeg in thread, keeps server responsive
+        async with RENDER_SEMAPHORE:        # max 2 concurrent FFmpeg processes
+            loop = asyncio.get_event_loop()
+            fn = functools.partial(
+                build_video, req.script, audio_path, video_path,
+                duration, req.mood, req.show_captions,
+                bg_path if has_bg else None,
+                req.caption_style, req.caption_placement,
+                music_path if has_music else None,
+                req.music_volume,
+            )
+            await loop.run_in_executor(None, fn)
     except Exception as e:
-        print(traceback.format_exc())
+        log.error(traceback.format_exc())
         raise HTTPException(500, f"Render failed: {e}")
 
     if not video_path.exists():
@@ -911,7 +1032,7 @@ async def generate_video(req: GenerateRequest):
 
     size_mb = video_path.stat().st_size / 1_048_576
     bg_src = "Pexels" if has_bg else "gradient"
-    print(f"✅  {size_mb:.1f} MB")
+    log.info("✅  %.1f MB", size_mb)
 
     return GenerateResponse(
         status="success",
@@ -972,4 +1093,3 @@ if __name__ == "__main__":
             "--worker-class","uvicorn.workers.UvicornWorker",
             "--timeout","300","--access-logfile","-","--error-logfile","-",
         ], check=True)
-
