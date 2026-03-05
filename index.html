@@ -154,6 +154,25 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
 .dl-sec.show{display:block}
 .ok-banner{display:flex;align-items:center;gap:9px;background:rgba(0,224,144,.07);border:1px solid rgba(0,224,144,.2);border-radius:var(--r2);padding:10px 14px;margin-bottom:10px;font-size:.8rem;color:var(--green);font-weight:600;font-family:var(--head)}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px}
+
+/* ════════ CAPTION STYLE PICKER ════════ */
+.cap-style-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px}
+.cap-card{padding:9px 6px 8px;background:rgba(255,255,255,.04);border:1.5px solid var(--border);border-radius:var(--r2);cursor:pointer;text-align:center;transition:all .15s;user-select:none}
+.cap-card:hover{border-color:var(--border2);background:rgba(255,255,255,.07)}
+.cap-card.on{border-color:var(--v2);background:rgba(190,82,255,.12);box-shadow:0 0 0 1px var(--v2) inset}
+.cap-card-icon{font-size:1.15rem;display:block;margin-bottom:3px;line-height:1}
+.cap-card-name{font-size:.62rem;font-weight:600;color:var(--dim);line-height:1.2}
+.cap-card-desc{font-size:.55rem;color:var(--faint);margin-top:2px;line-height:1.2}
+.cap-card.on .cap-card-name{color:var(--text)}
+/* placement buttons */
+.placement-row{display:flex;gap:7px}
+.place-btn{flex:1;padding:9px 6px;background:rgba(255,255,255,.04);border:1.5px solid var(--border);border-radius:var(--r2);cursor:pointer;text-align:center;font-size:.72rem;font-weight:600;color:var(--dim);transition:all .15s;user-select:none;font-family:var(--head)}
+.place-btn:hover{border-color:var(--border2);background:rgba(255,255,255,.07);color:var(--text)}
+.place-btn.on{border-color:var(--c1);background:rgba(0,212,255,.1);color:var(--c1);box-shadow:0 0 0 1px var(--c1) inset}
+/* caption preview strip */
+.cap-preview{position:relative;background:#111;border-radius:var(--r);overflow:hidden;height:72px;margin-bottom:14px;display:flex;align-items:center;justify-content:center}
+.cap-preview-bg{position:absolute;inset:0;background:linear-gradient(135deg,#1a1040,#0a1628);opacity:.9}
+.cap-preview-text{position:relative;z-index:1;font-size:.95rem;font-weight:700;pointer-events:none;transition:all .25s}
 </style>
 </head>
 <body>
@@ -226,13 +245,32 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
 
       <!-- 4. CAPTIONS -->
       <div class="panel">
-        <div class="ph"><div class="ph-left"><div class="step-num">4</div><div class="ph-title">Captions &amp; Visual</div></div></div>
-        <div class="pb">
+        <div class="ph">
+          <div class="ph-left"><div class="step-num">4</div><div class="ph-title">Captions &amp; Style</div></div>
+          <label class="sw"><input type="checkbox" id="capToggle" checked/><span class="sw-t"></span></label>
+        </div>
+        <div class="pb" id="capBody">
+
+          <!-- Live mini-preview -->
+          <div class="cap-preview" id="capPreview">
+            <div class="cap-preview-bg"></div>
+            <span class="cap-preview-text" id="capPreviewText">Your caption text here</span>
+          </div>
+
+          <!-- Style grid -->
+          <div class="field">
+            <label class="flabel">Caption Style</label>
+            <div class="cap-style-grid" id="capStyleGrid"></div>
+          </div>
+
+          <!-- Placement -->
+          <div class="field">
+            <label class="flabel">Caption Placement</label>
+            <div class="placement-row" id="placementRow"></div>
+          </div>
+
+          <!-- Info row -->
           <div class="tgroup">
-            <div class="trow">
-              <div class="trow-left"><span class="ticon">🔤</span>Animated Captions</div>
-              <label class="sw"><input type="checkbox" id="capToggle" checked/><span class="sw-t"></span></label>
-            </div>
             <div class="trow" id="langRow">
               <div class="trow-left"><span class="ticon">🌐</span>Caption Language</div>
               <span class="badge bg" id="langBadge">🇺🇸 English</span>
@@ -253,16 +291,16 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
       <div class="panel">
         <div class="ph">
           <div class="ph-left"><div class="step-num">5</div><div class="ph-title">Script Editor</div></div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span class="badge bv" id="srcBadge" style="display:none">template</span>
-            <button class="btn btn-g btn-sm" id="gsBtn" onclick="doScript()">✨ Generate Script</button>
-          </div>
+          <span class="badge bv" id="srcBadge" style="display:none">template</span>
         </div>
         <div class="pb">
+          <button class="btn btn-p btn-full btn-xl" id="gsBtn" onclick="doScript()" style="margin-bottom:14px;background:linear-gradient(130deg,var(--v1) 0%,var(--v2) 100%)">
+            ✨ Generate Script
+          </button>
           <div class="sbox" id="sbox">
             <div class="sempty" id="sempty">
               <strong>No script yet.</strong><br>
-              Enter your topic, pick a mood, then click<br>
+              Enter your topic above, pick a mood, then click<br>
               <strong style="color:var(--v2)">✨ Generate Script</strong><br>
               <span style="font-size:.72rem">You can edit any line before rendering.</span>
             </div>
@@ -348,16 +386,21 @@ select option,select optgroup{background:var(--s2);color:var(--text)}
 
 <script>
 let mood='motivational', vidLen=30, lines=[], voices=[];
+let capStyle='box', capPlacement='bottom';
 const LANGS={en:'English',es:'Spanish',fr:'French',de:'German',hi:'Hindi',ja:'Japanese',zh:'Chinese',ko:'Korean',pt:'Portuguese',it:'Italian',ru:'Russian'};
 const FLAGS={en:'🇺🇸',es:'🇪🇸',fr:'🇫🇷',de:'🇩🇪',hi:'🇮🇳',ja:'🇯🇵',zh:'🇨🇳',ko:'🇰🇷',pt:'🇧🇷',it:'🇮🇹',ru:'🇷🇺'};
 
 (async function(){
-  await Promise.all([loadVoices(), loadMoods()]);
+  await Promise.all([loadVoices(), loadMoods(), loadCaptionStyles()]);
   document.getElementById('topic').addEventListener('input',()=>{
     const n=document.getElementById('topic').value.length;
     const el=document.getElementById('cc');el.textContent=n+' / 300';el.classList.toggle('warn',n>240);
   });
-  document.getElementById('capToggle').addEventListener('change',sync);
+  document.getElementById('capToggle').addEventListener('change', e=>{
+    document.getElementById('capBody').style.opacity = e.target.checked ? '1' : '.4';
+    document.getElementById('capBody').style.pointerEvents = e.target.checked ? '' : 'none';
+    sync();
+  });
   document.getElementById('voiceSel').addEventListener('change',()=>{sync();document.getElementById('abox').classList.remove('show');});
 })();
 
@@ -388,6 +431,85 @@ async function loadMoods(){
       grid.appendChild(div);
     });
   }catch(e){console.error(e);}
+}
+
+// ══════════════════════════════════════
+// Caption styles & placements
+// ══════════════════════════════════════
+// Visual config for the live preview (mirrors the ASS styles on backend)
+const PREVIEW_STYLES = {
+  box:        {color:'#fff',   textShadow:'none',       background:'rgba(0,0,0,0.55)',  padding:'6px 16px', borderRadius:'6px', fontWeight:700, fontStyle:'normal', fontSize:'1rem'},
+  classic:    {color:'#fff',   textShadow:'2px 2px 6px #000, -1px -1px 4px #000', background:'transparent', padding:'6px 16px', borderRadius:'6px', fontWeight:700, fontStyle:'normal', fontSize:'1rem'},
+  neon:       {color:'#fff',   textShadow:'0 0 12px #be52ff, 0 0 24px #be52ff, 2px 2px 4px #000', background:'transparent', padding:'6px 16px', borderRadius:'6px', fontWeight:700, fontStyle:'normal', fontSize:'1.05rem'},
+  outlined:   {color:'#fff',   textShadow:'-3px -3px 0 #000,3px -3px 0 #000,-3px 3px 0 #000,3px 3px 0 #000', background:'transparent', padding:'6px 16px', borderRadius:'6px', fontWeight:700, fontStyle:'normal', fontSize:'1.05rem'},
+  minimal:    {color:'#fff',   textShadow:'1px 1px 3px #000', background:'transparent', padding:'6px 16px', borderRadius:'6px', fontWeight:400, fontStyle:'normal', fontSize:'.82rem'},
+  tiktok:     {color:'#ffff00',textShadow:'-2px -2px 0 #000,2px -2px 0 #000,-2px 2px 0 #000,2px 2px 0 #000', background:'transparent', padding:'6px 16px', borderRadius:'6px', fontWeight:700, fontStyle:'normal', fontSize:'1.1rem'},
+  cinematic:  {color:'#ffeedd',textShadow:'2px 2px 5px #000', background:'transparent', padding:'6px 16px', borderRadius:'6px', fontWeight:400, fontStyle:'italic', fontSize:'.95rem'},
+  fire:       {color:'#ff5200',textShadow:'-2px -2px 0 #000,2px -2px 0 #000,-2px 2px 0 #000,2px 2px 0 #000', background:'transparent', padding:'6px 16px', borderRadius:'6px', fontWeight:700, fontStyle:'normal', fontSize:'1.05rem'},
+};
+const PLACEMENT_ALIGN = {bottom:'flex-end', center:'center', top:'flex-start'};
+
+async function loadCaptionStyles(){
+  try{
+    const [sRes, pRes] = await Promise.all([
+      fetch('/caption-styles'), fetch('/caption-placements')
+    ]);
+    const {styles}     = await sRes.json();
+    const {placements} = await pRes.json();
+
+    // Build style grid
+    const grid = document.getElementById('capStyleGrid');
+    grid.innerHTML = '';
+    styles.forEach(s=>{
+      const [icon, ...nameParts] = s.label.split(' ');
+      const name = nameParts.join(' ');
+      const card = document.createElement('div');
+      card.className = 'cap-card' + (s.id===capStyle?' on':'');
+      card.dataset.id = s.id;
+      card.innerHTML = `<span class="cap-card-icon">${icon}</span><div class="cap-card-name">${name}</div><div class="cap-card-desc">${s.desc}</div>`;
+      card.onclick = ()=>{
+        capStyle = s.id;
+        grid.querySelectorAll('.cap-card').forEach(c=>c.classList.remove('on'));
+        card.classList.add('on');
+        updateCapPreview();
+      };
+      grid.appendChild(card);
+    });
+
+    // Build placement row
+    const row = document.getElementById('placementRow');
+    row.innerHTML = '';
+    placements.forEach(p=>{
+      const btn = document.createElement('button');
+      btn.className = 'place-btn' + (p.id===capPlacement?' on':'');
+      btn.dataset.id = p.id;
+      btn.textContent = p.label;
+      btn.onclick = ()=>{
+        capPlacement = p.id;
+        row.querySelectorAll('.place-btn').forEach(b=>b.classList.remove('on'));
+        btn.classList.add('on');
+        updateCapPreview();
+      };
+      row.appendChild(btn);
+    });
+
+    updateCapPreview();
+  }catch(e){console.error('loadCaptionStyles',e);}
+}
+
+function updateCapPreview(){
+  const prev = document.getElementById('capPreview');
+  const txt  = document.getElementById('capPreviewText');
+  const st   = PREVIEW_STYLES[capStyle] || PREVIEW_STYLES.box;
+  const align = PLACEMENT_ALIGN[capPlacement] || 'flex-end';
+
+  // Apply text styles
+  Object.assign(txt.style, st);
+
+  // Position preview text vertically
+  prev.style.alignItems = align;
+  prev.style.paddingTop    = capPlacement==='top'    ? '10px' : '0';
+  prev.style.paddingBottom = capPlacement==='bottom' ? '10px' : '0';
 }
 
 function setLen(v){vidLen=v;document.querySelectorAll('.len-tab').forEach(b=>b.classList.toggle('on',parseInt(b.dataset.v)===v));}
@@ -425,7 +547,7 @@ async function doScript(){
   const topic=document.getElementById('topic').value.trim();
   if(!topic||topic.length<3){showErr('Topic Required','Enter a topic first.');return;}
   hideErr();
-  const btn=document.getElementById('gsBtn');btn.disabled=true;btn.textContent='⏳ Generating…';setS('Generating script…');
+  const btn=document.getElementById('gsBtn');btn.disabled=true;btn.innerHTML='⏳ Generating Script…';setS('Generating script…');
   const v=voices.find(x=>x.id===document.getElementById('voiceSel').value);
   const lang=v?v.lang:'en';
   try{
@@ -438,7 +560,7 @@ async function doScript(){
     document.getElementById('engBadge').textContent=isAI?'Claude AI':'Template';
     setS('Script ready — '+lines.length+' lines');
   }catch(e){showErr('Script Failed',e.message);setS('Error');}
-  finally{btn.disabled=false;btn.textContent='✨ Generate Script';}
+  finally{btn.disabled=false;btn.innerHTML='✨ Generate Script';}
 }
 
 function renderScript(){
@@ -505,7 +627,8 @@ async function doVideo(){
     const res=await fetch('/generate',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({script:lines,voice:document.getElementById('voiceSel').value,mood,
         length_seconds:vidLen,show_captions:document.getElementById('capToggle').checked,
-        topic:document.getElementById('topic').value.trim()})});
+        topic:document.getElementById('topic').value.trim(),
+        caption_style:capStyle, caption_placement:capPlacement})});
     const data=await res.json();stopProg();
     if(!res.ok||data.status!=='success'){
       showErr('Generation Failed',data.detail||data.message||'Unknown error.');
