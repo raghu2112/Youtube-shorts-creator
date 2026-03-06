@@ -43,12 +43,16 @@ STATIC_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="AI Shorts Generator")
 
-# ── CORS — locked to your own domain in production ──────────────────
-# Set ALLOWED_ORIGINS env var to your Render URL, e.g.:
-#   https://ai-shorts-generator.onrender.com
-# Defaults to localhost only for local dev.
-_raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
-ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+# CORS — on Render the frontend is served by the same FastAPI app,
+# so same-origin requests never need CORS at all.
+# We keep the middleware for API clients but default to "*" so it
+# works out of the box without env-var configuration.
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "*")
+if _raw_origins == "*":
+    ALLOWED_ORIGINS = ["*"]
+else:
+    ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST"],
@@ -601,6 +605,156 @@ async def download_pexels(topic: str, mood_query: str, out: Path) -> bool:
         return False
 
 # ───────────────────────────────────────────────
+# AI Music — Jamendo + Claude
+# ───────────────────────────────────────────────
+# Jamendo is a free CC-licensed music platform with a public API.
+# No user API key needed — we use their free public client_id.
+JAMENDO_CLIENT_ID = "b6747d04"   # Jamendo's freely usable public test client ID
+
+# Mood → Jamendo tag/genre hints (used as fallback if Claude is unavailable)
+MOOD_MUSIC_TAGS = {
+    "motivational": ["energetic", "inspiring", "upbeat", "powerful"],
+    "calm":         ["ambient", "relaxing", "peaceful", "meditation"],
+    "thriller":     ["dark", "suspense", "dramatic", "cinematic"],
+    "educational":  ["corporate", "background", "neutral", "informative"],
+    "comedy":       ["funny", "playful", "quirky", "upbeat"],
+    "documentary":  ["cinematic", "atmospheric", "world", "acoustic"],
+    "horror":       ["dark", "eerie", "scary", "ambient"],
+    "business":     ["corporate", "professional", "motivational", "piano"],
+}
+
+async def _claude_music_query(mood: str, topic: str) -> str:
+    """
+    Ask Claude for the single best Jamendo search tag for this mood+topic.
+    Returns a plain string like 'energetic' or 'dark ambient'.
+    Falls back to first mood tag if Claude unavailable or times out.
+    """
+    if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "your-anthropic-key-here":
+        return MOOD_MUSIC_TAGS.get(mood, ["background"])[0]
+
+    prompt = (
+        f"You are a music supervisor for YouTube Shorts.\n"
+        f"Video mood: {mood}\nVideo topic: {topic}\n\n"
+        f"Pick ONE short music search tag (1-2 words) from Jamendo that best fits this video. "
+        f"Reply with ONLY the tag, nothing else. Examples: energetic, dark ambient, "
+        f"acoustic guitar, epic orchestral, lo-fi chill, upbeat pop, cinematic suspense."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_API_KEY,
+                         "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": "claude-haiku-4-5-20251001",
+                      "max_tokens": 20,
+                      "messages": [{"role": "user", "content": prompt}]},
+            )
+            if r.status_code == 200:
+                tag = r.json()["content"][0]["text"].strip().lower()
+                tag = tag.strip('"\'').split("\n")[0][:40]
+                log.info("🎵  Claude music tag: '%s'", tag)
+                return tag
+    except Exception as e:
+        log.warning("Claude music query failed: %s", e)
+    return MOOD_MUSIC_TAGS.get(mood, ["background"])[0]
+
+async def _search_jamendo(tag: str, duration_min: int = 60) -> Optional[dict]:
+    """
+    Search Jamendo for a CC-licensed track matching the tag.
+    Returns the best track dict or None.
+    """
+    params = {
+        "client_id":    JAMENDO_CLIENT_ID,
+        "format":       "json",
+        "limit":        "10",
+        "search":       tag,
+        "include":      "musicinfo",
+        "audioformat":  "mp32",           # 128kbps MP3 — small, fast
+        "durationbetween": f"{duration_min}_600",
+        "order":        "popularity_total",
+        "tags":         tag,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get("https://api.jamendo.com/v3.0/tracks/", params=params)
+            if r.status_code != 200:
+                log.warning("Jamendo HTTP %s", r.status_code)
+                return None
+            results = r.json().get("results", [])
+            if not results:
+                return None
+            # Pick a random track from top 5 for variety
+            return random.choice(results[:5])
+    except Exception as e:
+        log.warning("Jamendo search error: %s", e)
+        return None
+
+async def fetch_ai_music(mood: str, topic: str, duration: float) -> Optional[Path]:
+    """
+    Full pipeline:
+      1. Ask Claude for the best music tag
+      2. Search Jamendo for a matching CC-licensed track
+      3. Download & cache to MUSIC_DIR/{mood}.mp3
+      4. Return the path, or None if anything fails
+
+    Cache: if the mood file already exists and is > 100 KB, skip download.
+    This means the first generation per mood hits the network;
+    subsequent ones reuse the cached file instantly.
+    """
+    cache_path = MUSIC_DIR / f"{mood}.mp3"
+    if cache_path.exists() and cache_path.stat().st_size > 100_000:
+        log.info("🎵  Using cached music: %s", cache_path.name)
+        return cache_path
+
+    log.info("🎵  Fetching AI music for mood='%s' topic='%s'", mood, topic[:40])
+
+    # Step 1 — Claude picks the best search tag
+    tag = await _claude_music_query(mood, topic)
+
+    # Step 2 — search Jamendo; if no results, try fallback tags
+    track = await _search_jamendo(tag, duration_min=max(30, int(duration)))
+    if not track:
+        log.info("🎵  No results for '%s', trying mood fallback tags", tag)
+        for fallback in MOOD_MUSIC_TAGS.get(mood, ["background"]):
+            track = await _search_jamendo(fallback, duration_min=20)
+            if track:
+                break
+
+    if not track:
+        log.warning("🎵  No Jamendo track found for mood=%s", mood)
+        return None
+
+    audio_url = track.get("audiodownload") or track.get("audio", "")
+    if not audio_url:
+        log.warning("🎵  Track has no download URL")
+        return None
+
+    track_name = track.get("name", "unknown")
+    artist     = track.get("artist_name", "unknown")
+    license_url= track.get("license_ccurl", "CC")
+    log.info("🎵  '%s' by %s  [%s]", track_name, artist, license_url)
+
+    # Step 3 — download
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            async with client.stream("GET", audio_url) as resp:
+                if resp.status_code != 200:
+                    log.warning("🎵  Download HTTP %s", resp.status_code)
+                    return None
+                with open(cache_path, "wb") as f:
+                    async for chunk in resp.aiter_bytes(65536):
+                        f.write(chunk)
+        size_kb = cache_path.stat().st_size // 1024
+        log.info("🎵  Downloaded %d KB → %s", size_kb, cache_path)
+        return cache_path
+    except Exception as e:
+        log.warning("🎵  Music download failed: %s", e)
+        if cache_path.exists():
+            cache_path.unlink(missing_ok=True)
+        return None
+
+# ───────────────────────────────────────────────
 # Frame rendering
 # ───────────────────────────────────────────────
 # ───────────────────────────────────────────────────────
@@ -893,14 +1047,42 @@ async def health():
         "music_tracks": len(list(MUSIC_DIR.glob("*.mp3"))),
     })
 
+@app.get("/test")
+async def test():
+    """Quick smoke test — open this URL in your browser to confirm the server is running."""
+    ok_ff, ok_fp = check_ffmpeg()
+    return JSONResponse({
+        "server": "ok",
+        "ffmpeg": ok_ff,
+        "ffprobe": ok_fp,
+        "python": sys.version,
+        "output_dir": str(OUTPUT_DIR),
+        "output_writable": os.access(str(OUTPUT_DIR), os.W_OK),
+    })
+
 @app.get("/music-status")
 async def music_status():
-    """Return which mood music tracks are available."""
-    available = {}
+    """Return AI music availability and cached tracks."""
+    cached = {}
     for mood_id in MOODS:
         f = MUSIC_DIR / f"{mood_id}.mp3"
-        available[mood_id] = f.exists()
-    return {"tracks": available, "music_dir": str(MUSIC_DIR)}
+        cached[mood_id] = {"cached": f.exists(), "size_kb": f.stat().st_size // 1024 if f.exists() else 0}
+    return {
+        "source":    "Jamendo CC-licensed + Claude AI selection",
+        "jamendo":   True,
+        "claude_ai": ANTHROPIC_API_KEY != "your-anthropic-key-here",
+        "cached":    cached,
+        "music_dir": str(MUSIC_DIR),
+    }
+
+@app.delete("/music-cache")
+async def clear_music_cache():
+    """Clear all cached music tracks so they are re-fetched on next render."""
+    removed = []
+    for f in MUSIC_DIR.glob("*.mp3"):
+        f.unlink()
+        removed.append(f.name)
+    return {"cleared": removed}
 
 @app.get("/voices")
 async def get_voices():
@@ -1003,11 +1185,11 @@ async def generate_video(req: GenerateRequest, request: Request):
     has_bg = await download_pexels(topic_str, mood_query, bg_path)
     log.info("🎬  bg: %s", "Pexels ✅" if has_bg else "gradient")
 
-    # ── Background music ─────────────────────────────────────────────
-    music_path = MUSIC_DIR / f"{req.mood}.mp3"
-    if not music_path.exists():
-        music_path = MUSIC_DIR / "default.mp3"   # optional catch-all fallback
-    has_music = music_path.exists() and req.music_volume > 0
+    # ── AI Background Music (Claude + Jamendo) ───────────────────────
+    music_path = None
+    if req.music_volume > 0:
+        music_path = await fetch_ai_music(req.mood, topic_str, duration)
+    has_music = music_path is not None and req.music_volume > 0
     log.info("🎵  music: %s", f"{music_path.name} @ {req.music_volume}%" if has_music else "off")
 
     log.info("🚀  Rendering…")
