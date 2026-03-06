@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== Installing FFmpeg ==="
-apt-get update -qq
-apt-get install -y ffmpeg
-
-echo "=== FFmpeg version ==="
+echo "=== Checking FFmpeg (pre-installed on Render) ==="
 ffmpeg -version | head -1
+ffprobe -version | head -1
 
 echo "=== Installing Python packages ==="
 pip install --upgrade pip
