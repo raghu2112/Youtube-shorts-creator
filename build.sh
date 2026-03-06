@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-set -e   # exit immediately on any error
+set -e
 
 echo "=== Installing FFmpeg ==="
-sudo apt-get update -qq
-sudo apt-get install -y ffmpeg
+apt-get update -qq
+apt-get install -y ffmpeg
 
 echo "=== FFmpeg version ==="
 ffmpeg -version | head -1
