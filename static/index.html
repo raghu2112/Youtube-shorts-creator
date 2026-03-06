@@ -295,7 +295,7 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;bac
             </div>
             <div class="trow">
               <div class="trow-left"><span class="ticon">🎵</span>Background Music</div>
-              <span class="badge bb" id="musicBadge">Checking…</span>
+              <span class="badge bv" id="musicBadge" title="Claude picks the best royalty-free track from Jamendo for your mood">Checking…</span>
             </div>
           </div>
 
@@ -601,23 +601,21 @@ async function loadMusicStatus(){
     const d = await (await fetch('/music-status')).json();
     const badge = document.getElementById('musicBadge');
     const row   = document.getElementById('musicRow');
-    const avail = Object.values(d.tracks).filter(Boolean).length;
-    const total = Object.keys(d.tracks).length;
-    if(avail === 0){
-      badge.textContent = '⚠️ No tracks';
-      badge.className = 'badge by';
-      row.style.opacity = '.4';
-      row.style.pointerEvents = 'none';
-      document.getElementById('musicVol').value = 0;
-      musicVolume = 0;
-      document.getElementById('musicVolVal').textContent = 'Off';
+    // New response shape: {source, jamendo, claude_ai, cached:{mood:{cached,size_kb}}}
+    const cachedCount = Object.values(d.cached||{}).filter(v=>v.cached).length;
+    const total = Object.keys(d.cached||{}).length;
+    if(d.claude_ai){
+      badge.textContent = '🤖 Claude AI';
+      badge.className = 'badge bv';
+      badge.title = 'Music fetched automatically via Claude + Jamendo CC library. ' + cachedCount + '/' + total + ' moods cached.';
     } else {
-      badge.textContent = avail + '/' + total + ' moods';
-      badge.className = 'badge bg';
+      badge.textContent = '🎵 Jamendo';
+      badge.className = 'badge bb';
+      badge.title = 'Music from Jamendo CC library. Add Anthropic key for AI track selection.';
     }
   }catch(e){
     const badge = document.getElementById('musicBadge');
-    if(badge) badge.textContent = 'N/A';
+    if(badge){ badge.textContent = 'N/A'; badge.className = 'badge'; }
   }
 }
 
@@ -662,7 +660,10 @@ async function doScript(){
   try{
     const res=await fetch('/api/generate-script',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({topic,mood,length_seconds:vidLen,language:lang})});
-    const data=await res.json();if(!res.ok)throw new Error(data.detail||'Failed');
+    const raw=await res.text();
+    let data={};
+    try{data=JSON.parse(raw);}catch(e){throw new Error('Server returned non-JSON (HTTP '+res.status+'): '+raw.slice(0,200));}
+    if(!res.ok)throw new Error(data.detail||'Failed');
     lines=[...data.script];renderScript();
     const isAI=data.source==='claude-ai';
     const b=document.getElementById('srcBadge');b.style.display='inline-flex';b.textContent=isAI?'✨ Claude AI':'📋 Template';
@@ -740,7 +741,15 @@ async function doVideo(){
         topic:document.getElementById('topic').value.trim(),
         caption_style:capStyle, caption_placement:capPlacement,
         music_volume:parseInt(musicVolume)})});
-    const data=await res.json();stopProg();
+    const raw=await res.text();
+    let data={};
+    try{data=JSON.parse(raw);}catch(e){
+      stopProg();
+      showErr('Server Error (HTTP '+res.status+')', raw.slice(0,300)||'Empty response — check Render logs for details.');
+      document.getElementById('pvStatus').textContent='Failed';document.getElementById('pvStatus').className='badge';
+      setS('Error');return;
+    }
+    stopProg();
     if(!res.ok||data.status!=='success'){
       showErr('Generation Failed',data.detail||data.message||'Unknown error.');
       document.getElementById('pvStatus').textContent='Failed';document.getElementById('pvStatus').className='badge';
