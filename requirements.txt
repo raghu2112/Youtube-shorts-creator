@@ -1,11 +1,19 @@
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-gunicorn==22.0.0
-gtts==2.5.1
-httpx==0.27.0
-numpy==1.26.4
-Pillow==10.3.0
-python-multipart==0.0.9
-aiofiles==23.2.1
-slowapi==0.1.9
-anyio==4.4.0
+# Core server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# HTTP client (Claude API + Pexels API)
+httpx>=0.25.0
+
+# Voice narration — gTTS (no API key, uses Google's public TTS)
+gtts>=2.4.0
+
+# Offline TTS fallback (system voices, no internet needed)
+pyttsx3>=2.90
+
+# Audio/video (FFmpeg must be installed separately: https://ffmpeg.org)
+# FFmpeg handles all video processing — no Python video library needed
+
+# Utilities
+python-dotenv>=1.0.0
