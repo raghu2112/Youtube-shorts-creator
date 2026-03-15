@@ -1,1277 +1,598 @@
 """
-AI YouTube Shorts Generator — Backend
-Run: python main.py
+AI Viral Shorts Studio  —  v6
+==============================
+Gemini + Groq Edition  (no Claude dependency)
+
+AI scripts : Gemini (gemini-1.5-flash)  →  Groq (llama-3.3-70b)  →  local template
+Voice      : gTTS (Google TTS — free, no API key)
+Video bg   : Pexels API (free)
+Music      : FFmpeg synthesiser (no API key)
+
+Run:  python main.py
 Open: http://127.0.0.1:8000
 """
 
-import os, sys, traceback, asyncio, shutil, subprocess, logging
-import textwrap, time, random, math, functools, json
+import os, sys, shutil, asyncio, functools, traceback, logging, time, subprocess
 from pathlib import Path
+
+SV_W, SV_H = 1080, 1920   # Shorts vertical dimensions
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from typing import Optional
 
-import httpx, numpy as np
-from gtts import gTTS
-from PIL import Image
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from pydantic import BaseModel
+from modules.script_gen    import generate_script, VIDEO_STYLES
+from modules.voice_gen     import (generate_all, synthesize, get_duration,
+                                    VOICES, VOICE_SPEEDS, _get_preview_text)
+from modules.visual_gen    import (download_all_clips,
+                                    scale_and_crop, scale_and_crop_vertical,
+                                    build_gradient_clip, STYLE_COLORS,
+                                    MOTION_EFFECTS)
+from modules.music_gen     import get_music
+from modules.video_builder import (write_subtitles, make_title_card,
+                                    make_outro_card, concat_video_segments,
+                                    assemble,
+                                    CAPTION_POSITIONS, CAPTION_STYLES)
 
-logging.basicConfig(level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt="%H:%M:%S")
-log = logging.getLogger("shorts")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-7s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("ytgen")
 
-# ╔══════════════════════════════════════════════╗
-# ║         API KEYS — set as env vars           ║
-# ║   ANTHROPIC_API_KEY  and  PEXELS_API_KEY     ║
-# ╚══════════════════════════════════════════════╝
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "your-anthropic-key-here")
-PEXELS_API_KEY    = os.environ.get("PEXELS_API_KEY",    "your-pexels-key-here")
-# ═══════════════════════════════════════════════
+
+# ─── Config ───────────────────────────────────────────────────────
+
+_ENV_PATH = Path(__file__).parent / ".env"
+
+try:
+    from dotenv import load_dotenv
+    if _ENV_PATH.exists():
+        load_dotenv(dotenv_path=_ENV_PATH, override=False)
+        log.info(".env loaded via python-dotenv")
+    else:
+        log.warning(".env not found at %s — copy .env.example and fill in keys.", _ENV_PATH)
+except ImportError:
+    log.warning("python-dotenv not installed. Using built-in parser.")
+    if _ENV_PATH.exists():
+        for _line in _ENV_PATH.read_text(encoding="utf-8-sig").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            if _line.lower().startswith("export "):
+                _line = _line[7:].strip()
+            _k, _, _v = _line.partition("=")
+            _k = _k.strip()
+            _v = _v.split(" #")[0].split("\t#")[0].strip().strip('"').strip("'")
+            if _k and _k not in os.environ:
+                os.environ[_k] = _v
+
+_PLACEHOLDER_GEMINI  = "your-gemini-key-here"
+_PLACEHOLDER_GROQ    = "your-groq-key-here"
+_PLACEHOLDER_PEXELS  = "your-pexels-key-here"
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", _PLACEHOLDER_GEMINI).strip()
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY",   _PLACEHOLDER_GROQ).strip()
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY",  _PLACEHOLDER_PEXELS).strip()
+
+
+def _key_configured(key: str, placeholder: str) -> bool:
+    return bool(key and key not in (placeholder, "", "your-key-here")
+                and not key.startswith("your-"))
+
+
+if _key_configured(GEMINI_API_KEY, _PLACEHOLDER_GEMINI):
+    log.info("Gemini  API key: configured (gemini-1.5-flash — free tier)")
+else:
+    log.info("Gemini  API key: not set  (add GEMINI_API_KEY to .env — free)")
+
+if _key_configured(GROQ_API_KEY, _PLACEHOLDER_GROQ):
+    log.info("Groq    API key: configured (llama-3.3-70b — free tier)")
+else:
+    log.info("Groq    API key: not set  (add GROQ_API_KEY to .env — free)")
 
 BASE_DIR   = Path(__file__).parent
-# On Render (and most cloud platforms) the repo is read-only except /tmp
-OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(BASE_DIR / "output")))
+OUTPUT_DIR = BASE_DIR / "output"
 STATIC_DIR = BASE_DIR / "static"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-STATIC_DIR.mkdir(exist_ok=True)
+MUSIC_DIR  = BASE_DIR / "music"
+for _d in (OUTPUT_DIR, STATIC_DIR, MUSIC_DIR):
+    _d.mkdir(exist_ok=True)
 
-app = FastAPI(title="AI Shorts Generator")
 
-# CORS — on Render the frontend is served by the same FastAPI app,
-# so same-origin requests never need CORS at all.
-# We keep the middleware for API clients but default to "*" so it
-# works out of the box without env-var configuration.
-_raw_origins = os.environ.get("ALLOWED_ORIGINS", "*")
-if _raw_origins == "*":
-    ALLOWED_ORIGINS = ["*"]
-else:
-    ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+# ─── Styles that use hard-cut (no xfade) + viral caption defaults ──
+_HARD_CUT_STYLES = {"viral", "lifestyle", "motivational"}
+_VIRAL_CAP_DEFAULTS = {
+    "viral":     ("viral_center", "viral"),
+    "lifestyle": ("viral_center", "viral"),
+}
 
-app.add_middleware(CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
-)
 
-# ── Rate limiter (slowapi) ───────────────────────────────────────────
-# /generate: max 5 renders per minute per IP  (protects Pexels + Anthropic quota)
-# /api/generate-script: max 20 per minute per IP
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# ─── App ──────────────────────────────────────────────────────────
 
-# ── Concurrent render gate ───────────────────────────────────────────
-# On Render Starter (512 MB) two simultaneous FFmpeg processes is the max.
-# Increase to 3 if you upgrade to Standard plan (2 GB).
-RENDER_SEMAPHORE = asyncio.Semaphore(2)
-
+app = FastAPI(title="AI Viral Shorts Studio v6")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# ── Music directory ──────────────────────────────────────────────────
-# Place royalty-free MP3s here named after moods:
-#   music/motivational.mp3, music/calm.mp3, music/horror.mp3 …
-# Free sources: https://pixabay.com/music  https://freemusicarchive.org
-# Any missing mood simply plays without background music.
-MUSIC_DIR = BASE_DIR / "music"
-MUSIC_DIR.mkdir(exist_ok=True)
 
-VIDEO_WIDTH  = 1080
-VIDEO_HEIGHT = 1920
-FPS          = 30
+# ─── Pydantic models ──────────────────────────────────────────────
 
-# ───────────────────────────────────────────────
-# Voice catalogue
-# ───────────────────────────────────────────────
-# Each voice maps to a gTTS (lang, tld) pair for regional accent variety.
-# gTTS tld options:  com=US, co.uk=UK, com.au=AU, co.in=IN, ca=CA, ie=Ireland, co.za=SA
-VOICES = [
-    {"id":"en-US-1", "name":"Aria",      "desc":"US English",      "lang":"en","flag":"🇺🇸","gtts_lang":"en","gtts_tld":"com"},
-    {"id":"en-US-2", "name":"Jenny",     "desc":"US English",      "lang":"en","flag":"🇺🇸","gtts_lang":"en","gtts_tld":"com"},
-    {"id":"en-US-3", "name":"Guy",       "desc":"US English",      "lang":"en","flag":"🇺🇸","gtts_lang":"en","gtts_tld":"us"},
-    {"id":"en-US-4", "name":"Sara",      "desc":"US English",      "lang":"en","flag":"🇺🇸","gtts_lang":"en","gtts_tld":"com"},
-    {"id":"en-GB-1", "name":"Sonia",     "desc":"UK English",      "lang":"en","flag":"🇬🇧","gtts_lang":"en","gtts_tld":"co.uk"},
-    {"id":"en-GB-2", "name":"Ryan",      "desc":"UK English",      "lang":"en","flag":"🇬🇧","gtts_lang":"en","gtts_tld":"co.uk"},
-    {"id":"en-AU-1", "name":"Natasha",   "desc":"Australian",      "lang":"en","flag":"🇦🇺","gtts_lang":"en","gtts_tld":"com.au"},
-    {"id":"en-AU-2", "name":"William",   "desc":"Australian",      "lang":"en","flag":"🇦🇺","gtts_lang":"en","gtts_tld":"com.au"},
-    {"id":"en-IN-1", "name":"Neerja",    "desc":"Indian English",  "lang":"en","flag":"🇮🇳","gtts_lang":"en","gtts_tld":"co.in"},
-    {"id":"en-IE-1", "name":"Emily",     "desc":"Irish English",   "lang":"en","flag":"🇮🇪","gtts_lang":"en","gtts_tld":"ie"},
-    {"id":"en-ZA-1", "name":"Leah",      "desc":"South African",   "lang":"en","flag":"🇿🇦","gtts_lang":"en","gtts_tld":"co.za"},
-    {"id":"en-CA-1", "name":"Linda",     "desc":"Canadian",        "lang":"en","flag":"🇨🇦","gtts_lang":"en","gtts_tld":"ca"},
-    {"id":"es-ES-1", "name":"Elvira",    "desc":"Spanish (Spain)", "lang":"es","flag":"🇪🇸","gtts_lang":"es","gtts_tld":"es"},
-    {"id":"es-MX-1", "name":"Dalia",     "desc":"Spanish (Mexico)","lang":"es","flag":"🇲🇽","gtts_lang":"es","gtts_tld":"com.mx"},
-    {"id":"es-US-1", "name":"Valentina", "desc":"Spanish (US)",    "lang":"es","flag":"🇺🇸","gtts_lang":"es","gtts_tld":"com"},
-    {"id":"fr-FR-1", "name":"Denise",    "desc":"French (France)", "lang":"fr","flag":"🇫🇷","gtts_lang":"fr","gtts_tld":"fr"},
-    {"id":"fr-CA-1", "name":"Sylvie",    "desc":"French (Canada)", "lang":"fr","flag":"🇨🇦","gtts_lang":"fr","gtts_tld":"ca"},
-    {"id":"de-DE-1", "name":"Katja",     "desc":"German",          "lang":"de","flag":"🇩🇪","gtts_lang":"de","gtts_tld":"de"},
-    {"id":"hi-IN-1", "name":"Swara",     "desc":"Hindi",           "lang":"hi","flag":"🇮🇳","gtts_lang":"hi","gtts_tld":"co.in"},
-    {"id":"ja-JP-1", "name":"Nanami",    "desc":"Japanese",        "lang":"ja","flag":"🇯🇵","gtts_lang":"ja","gtts_tld":"co.jp"},
-    {"id":"zh-CN-1", "name":"Xiaoxiao",  "desc":"Chinese",         "lang":"zh","flag":"🇨🇳","gtts_lang":"zh-CN","gtts_tld":"com"},
-    {"id":"zh-TW-1", "name":"HsiaoChen", "desc":"Chinese (TW)",    "lang":"zh","flag":"🇹🇼","gtts_lang":"zh-TW","gtts_tld":"com"},
-    {"id":"ko-KR-1", "name":"SunHi",     "desc":"Korean",          "lang":"ko","flag":"🇰🇷","gtts_lang":"ko","gtts_tld":"co.kr"},
-    {"id":"pt-BR-1", "name":"Francisca", "desc":"Portuguese (BR)", "lang":"pt","flag":"🇧🇷","gtts_lang":"pt","gtts_tld":"com.br"},
-    {"id":"pt-PT-1", "name":"Raquel",    "desc":"Portuguese (PT)", "lang":"pt","flag":"🇵🇹","gtts_lang":"pt","gtts_tld":"pt"},
-    {"id":"it-IT-1", "name":"Elsa",      "desc":"Italian",         "lang":"it","flag":"🇮🇹","gtts_lang":"it","gtts_tld":"it"},
-    {"id":"ru-RU-1", "name":"Svetlana",  "desc":"Russian",         "lang":"ru","flag":"🇷🇺","gtts_lang":"ru","gtts_tld":"ru"},
-    {"id":"ar-AE-1", "name":"Fatima",    "desc":"Arabic",          "lang":"ar","flag":"🇦🇪","gtts_lang":"ar","gtts_tld":"com"},
-    {"id":"nl-NL-1", "name":"Colette",   "desc":"Dutch",           "lang":"nl","flag":"🇳🇱","gtts_lang":"nl","gtts_tld":"nl"},
-    {"id":"tr-TR-1", "name":"Emel",      "desc":"Turkish",         "lang":"tr","flag":"🇹🇷","gtts_lang":"tr","gtts_tld":"com.tr"},
-    {"id":"pl-PL-1", "name":"Zofia",     "desc":"Polish",          "lang":"pl","flag":"🇵🇱","gtts_lang":"pl","gtts_tld":"pl"},
-]
-
-# Build a lookup: voice_id → gTTS params
-_VOICE_MAP = {v["id"]: (v["gtts_lang"], v["gtts_tld"]) for v in VOICES}
-
-VOICE_PREVIEW_TEXT = {
-    "en": "Hey! This is how I sound. I will narrate your short video with this voice.",
-    "es": "Hola, así es como sueno. Seré el narrador de tu video corto.",
-    "fr": "Bonjour, voici ma voix. Je vais narrer votre vidéo courte.",
-    "de": "Hallo, so klingt meine Stimme. Ich werde dein Kurzvideo erzählen.",
-    "hi": "नमस्ते, मैं ऐसे बोलता हूँ। मैं आपके शॉर्ट वीडियो की आवाज़ बनूँगा।",
-    "ja": "こんにちは。これが私の声です。あなたの動画をナレーションします。",
-    "zh": "你好，这是我的声音。我将为你的短视频配音。",
-    "ko": "안녕하세요, 이것이 제 목소리입니다. 당신의 영상을 나레이션하겠습니다。",
-    "pt": "Olá, esta é minha voz. Vou narrar o seu vídeo curto.",
-    "it": "Ciao, questa è la mia voce. Narrerò il tuo video breve.",
-    "ru": "Привет, это мой голос. Я буду озвучивать ваше видео.",
-    "ar": "مرحبا، هذا صوتي. سأقوم بالتعليق على الفيديو القصير الخاص بك.",
-    "nl": "Hallo, dit is mijn stem. Ik zal je korte video vertellen.",
-    "tr": "Merhaba, bu benim sesim. Kısa videonuzu anlatacağım.",
-    "pl": "Cześć, to jest mój głos. Opiszę twój krótki film.",
-}
-
-MOODS = {
-    "motivational": {"label":"🔥 Motivational","query":"success athlete motivation winner",
-        "colors":[(160,10,0),(220,70,0),(255,130,0)],"overlay":(25,8,0,110),
-        "tone":"energetic, powerful, inspiring, action-oriented"},
-    "calm":         {"label":"🌊 Calm","query":"nature ocean zen peaceful",
-        "colors":[(0,30,70),(0,70,130),(10,120,170)],"overlay":(0,8,20,100),
-        "tone":"soothing, gentle, mindful, peaceful"},
-    "thriller":     {"label":"😱 Thriller","query":"dark dramatic suspense mystery",
-        "colors":[(10,0,20),(55,0,75),(110,0,55)],"overlay":(12,0,22,145),
-        "tone":"suspenseful, intense, dramatic, gripping"},
-    "educational":  {"label":"🎓 Educational","query":"science technology innovation",
-        "colors":[(0,25,75),(0,70,150),(0,130,190)],"overlay":(0,8,28,110),
-        "tone":"informative, clear, engaging, factual"},
-    "comedy":       {"label":"😂 Comedy","query":"fun colorful vibrant playful",
-        "colors":[(170,0,90),(215,75,0),(175,150,0)],"overlay":(22,8,0,90),
-        "tone":"funny, witty, playful, humorous"},
-    "documentary":  {"label":"🌍 Documentary","query":"cinematic landscape world travel",
-        "colors":[(18,18,18),(55,38,18),(95,65,28)],"overlay":(10,10,10,130),
-        "tone":"factual, journalistic, thoughtful, cinematic"},
-    "horror":       {"label":"👻 Horror","query":"dark eerie fog mysterious night",
-        "colors":[(5,0,0),(28,0,0),(58,8,8)],"overlay":(15,0,0,155),
-        "tone":"eerie, unsettling, dark, creepy"},
-    "business":     {"label":"💼 Business","query":"office city corporate professional",
-        "colors":[(8,18,38),(18,38,75),(28,58,115)],"overlay":(10,14,28,120),
-        "tone":"professional, confident, authoritative, strategic"},
-}
-
-LANG_NAMES = {
-    "en":"English","es":"Spanish","fr":"French","de":"German","hi":"Hindi",
-    "ja":"Japanese","zh":"Chinese","ko":"Korean","pt":"Portuguese","it":"Italian","ru":"Russian",
-}
-
-# ───────────────────────────────────────────────
-# Caption styles & placements
-# ───────────────────────────────────────────────
-# ASS colour format: &HAABBGGRR  (alpha, blue, green, red — reversed from HTML)
-CAPTION_STYLES = {
-    "box": {
-        "label": "📦 Box",
-        "desc":  "White text · dark box",
-        # White text on a semi-transparent black rectangle — most readable
-        "primary":     "&H00FFFFFF",
-        "secondary":   "&H000000FF",
-        "outline_col": "&H00000000",
-        "back_col":    "&HAA000000",
-        "bold": -1, "border_style": 3, "outline": 0, "shadow": 6,
-        "fontsize": 72,
-    },
-    "classic": {
-        "label": "✨ Classic",
-        "desc":  "White · drop shadow",
-        "primary":     "&H00FFFFFF",
-        "secondary":   "&H000000FF",
-        "outline_col": "&H00000000",
-        "back_col":    "&H00000000",
-        "bold": -1, "border_style": 1, "outline": 3, "shadow": 5,
-        "fontsize": 72,
-    },
-    "neon": {
-        "label": "💜 Neon",
-        "desc":  "White · purple glow",
-        # White text with a vivid purple/magenta glow outline
-        "primary":     "&H00FFFFFF",
-        "secondary":   "&H000000FF",
-        "outline_col": "&H00FF52BE",   # magenta glow  (BGR: BE 52 FF)
-        "back_col":    "&H00000000",
-        "bold": -1, "border_style": 1, "outline": 5, "shadow": 10,
-        "fontsize": 74,
-    },
-    "outlined": {
-        "label": "⬛ Outlined",
-        "desc":  "White · thick outline",
-        "primary":     "&H00FFFFFF",
-        "secondary":   "&H000000FF",
-        "outline_col": "&H00000000",
-        "back_col":    "&H00000000",
-        "bold": -1, "border_style": 1, "outline": 7, "shadow": 0,
-        "fontsize": 76,
-    },
-    "minimal": {
-        "label": "🔤 Minimal",
-        "desc":  "Small · clean · subtle",
-        "primary":     "&H00FFFFFF",
-        "secondary":   "&H000000FF",
-        "outline_col": "&H80000000",
-        "back_col":    "&H00000000",
-        "bold": 0, "border_style": 1, "outline": 2, "shadow": 2,
-        "fontsize": 58,
-    },
-    "tiktok": {
-        "label": "🔥 TikTok",
-        "desc":  "Yellow · bold · big",
-        # Bright yellow like viral TikTok captions
-        "primary":     "&H0000FFFF",   # yellow (BGR: 00 FF FF)
-        "secondary":   "&H000000FF",
-        "outline_col": "&H00000000",
-        "back_col":    "&H00000000",
-        "bold": -1, "border_style": 1, "outline": 5, "shadow": 0,
-        "fontsize": 82,
-    },
-    "cinematic": {
-        "label": "🎬 Cinematic",
-        "desc":  "Cream · elegant · italic",
-        # Warm cream italic — documentary / film style
-        "primary":     "&H00D0E8FF",   # cream (BGR: D0 E8 FF)
-        "secondary":   "&H000000FF",
-        "outline_col": "&H00000000",
-        "back_col":    "&H00000000",
-        "bold": 0, "border_style": 1, "outline": 3, "shadow": 4,
-        "fontsize": 68, "italic": -1,
-    },
-    "fire": {
-        "label": "🔴 Fire",
-        "desc":  "Orange-red · high energy",
-        "primary":     "&H000052FF",   # orange-red (BGR: 00 52 FF)
-        "secondary":   "&H000000FF",
-        "outline_col": "&H00000000",
-        "back_col":    "&H00000000",
-        "bold": -1, "border_style": 1, "outline": 5, "shadow": 0,
-        "fontsize": 78,
-    },
-}
-
-CAPTION_PLACEMENTS = {
-    "bottom": {"label": "⬇ Bottom", "alignment": 2, "margin_v": 90},
-    "center": {"label": "⬛ Center", "alignment": 5, "margin_v": 0},
-    "top":    {"label": "⬆ Top",    "alignment": 8, "margin_v": 90},
-}
-
-# ───────────────────────────────────────────────
-# Request models
-# ───────────────────────────────────────────────
 class ScriptRequest(BaseModel):
-    topic: str
-    mood: str = "motivational"
-    length_seconds: int = 30
-    language: str = "en"
+    topic:        str
+    style:        str = "viral"
+    duration_sec: int = 60
+    shorts_mode:  bool = True
 
-class VoicePreviewRequest(BaseModel):
+class PreviewRequest(BaseModel):
     voice_id: str
-    lang: str = "en"
 
 class GenerateRequest(BaseModel):
-    script: list
-    voice: str = "en-US-1"
-    mood: str = "motivational"
-    length_seconds: int = 30
-    show_captions: bool = True
-    topic: str = ""
-    caption_style: str = "box"
-    caption_placement: str = "bottom"
-    music_volume: int = 20        # 0 = off, 1–100 = % of full volume
+    topic:        str
+    script:       dict
+    voice_id:     str   = "en-us"
+    style:        str   = "viral"
+    music_volume: float = 0.22
+
+    voice_speed:  float = 1.0
+    cap_position: str   = "viral_center"
+    cap_style:    str   = "viral"
+    # Accept both "custom_cap_x" (legacy) and "custom_x" (new HTML) for XY coords
+    custom_cap_x: int   = 960
+    custom_cap_y: int   = 900
+    custom_x:     int   = -1   # if set (≥0) overrides custom_cap_x
+    custom_y:     int   = -1   # if set (≥0) overrides custom_cap_y
+
+    show_subs:    bool  = True
+    add_intro:    bool  = False
+    add_outro:    bool  = False
+    shorts_mode:  bool  = True
+
+    def resolved_x(self) -> int:
+        return self.custom_x if self.custom_x >= 0 else self.custom_cap_x
+
+    def resolved_y(self) -> int:
+        return self.custom_y if self.custom_y >= 0 else self.custom_cap_y
 
 class GenerateResponse(BaseModel):
-    status: str
+    status:    str
     video_url: str = ""
-    message: str = ""
+    title:     str = ""
+    message:   str = ""
 
-# ───────────────────────────────────────────────
-# Utilities
-# ───────────────────────────────────────────────
-def check_ffmpeg():
+
+# ─── Helpers ──────────────────────────────────────────────────────
+
+def _ffmpeg_ok() -> tuple:
     return shutil.which("ffmpeg") is not None, shutil.which("ffprobe") is not None
 
-def get_audio_duration(path: Path) -> float:
-    r = subprocess.run(
-        ["ffprobe","-v","error","-show_entries","format=duration",
-         "-of","default=noprint_wrappers=1:nokey=1", str(path)],
-        capture_output=True, text=True)
-    try:
-        d = float(r.stdout.strip())
-        return d if d > 0.5 else 12.0
-    except ValueError:
-        return 12.0
 
-# ───────────────────────────────────────────────
-# Script generation
-# ───────────────────────────────────────────────
-def fallback_script(topic: str, mood: str, length_seconds: int) -> list:
-    p = topic.strip().rstrip(".")
-    count = max(5, min(14, length_seconds // 3))
-    banks = {
-        "motivational":[
-            f"This is your sign to master {p}.",
-            "Most people quit right before the breakthrough.",
-            "The ones who win show up every single day.",
-            "It starts with one decision made right now.",
-            "Discipline will always beat motivation.",
-            f"Master {p} and your entire life transforms.",
-            "Stop waiting for the perfect moment.",
-            "Your future is built in the next five minutes.",
-            "The secret is to start before you feel ready.",
-            "Write this down — it will change everything.",
-            "Your only competition is who you were yesterday.",
-            "Share this with someone who needs to hear it.",
-            "Follow for daily mindset shifts.",
-            "The clock is ticking. Are you ready?"],
-        "calm":[
-            f"Let us talk about {p}.",
-            "Take a slow deep breath right now.",
-            "The world gets quieter when you pay attention.",
-            "There is beauty hiding in the ordinary.",
-            "One small step forward is still real progress.",
-            f"{p} teaches us the power of presence.",
-            "You do not need to rush anything today.",
-            "Peace is a practice not a destination.",
-            "Let go of what is beyond your control.",
-            "Rest is not a reward — it is a requirement.",
-            "You are exactly where you need to be.",
-            "Breathe. Everything will work itself out.",
-            "Follow for more peaceful moments.",
-            "Save this for when you need it most."],
-        "thriller":[
-            f"The truth about {p} is darker than you think.",
-            "Nobody is talking about this until now.",
-            "Pay very close attention to what comes next.",
-            "It started with a single unexplained event.",
-            "The deeper you dig the stranger it gets.",
-            "Three people disappeared after discovering this.",
-            "The pattern became impossible to ignore.",
-            f"And {p} was at the center of everything.",
-            "Connect the dots. You will see it too.",
-            "Once you see this you cannot unsee it.",
-            "What do you think is really happening here?",
-            "Comment below. We need to discuss this.",
-            "Follow before this gets removed.",
-            "Part two drops tomorrow night."],
-        "educational":[
-            f"Here is what science actually says about {p}.",
-            "Most people have been getting this completely wrong.",
-            "Let me explain it in the simplest terms.",
-            "Researchers spent decades proving this one fact.",
-            "The data is far more surprising than you think.",
-            f"{p} works because of one core principle.",
-            "Here is the insight that changes everything.",
-            "Apply this and watch what happens.",
-            "The results are backed by peer reviewed research.",
-            "This is why the experts pay close attention.",
-            "Share this with someone who needs to know.",
-            "Follow for more science backed content.",
-            "Save this video for future reference.",
-            "Knowledge like this is real power."],
-        "comedy":[
-            f"Nobody warns you about the reality of {p}.",
-            "And honestly I felt this deep in my soul.",
-            "Why is this so devastatingly accurate?",
-            "Scientists have spent years not understanding this.",
-            f"{p} said absolutely not today.",
-            "Your brain at three in the morning apparently.",
-            "The accuracy of this should be illegal.",
-            "Send this to someone who needs therapy.",
-            "If you know you genuinely know.",
-            "This is peak human experience right here.",
-            "My entire life summed up in one video.",
-            "Part two is somehow even more accurate.",
-            "Follow for more painfully relatable content.",
-            "Like if this described your whole week."],
-        "documentary":[
-            f"The story of {p} begins in an unlikely place.",
-            "For decades most of this remained completely hidden.",
-            "The evidence was hiding in plain sight all along.",
-            "Local communities felt the shift before anyone else.",
-            "Experts still disagree on what happens next.",
-            f"But {p} continues to reshape our world today.",
-            "The question is are we paying attention?",
-            "History has a habit of repeating its patterns.",
-            "What we do now will echo for generations.",
-            "The choice ultimately belongs to all of us.",
-            "Follow for more untold stories from around the world.",
-            "Share this with someone who needs to see it.",
-            "The full documentary drops this Friday.",
-            "Subscribe so you never miss another one."],
-        "horror":[
-            f"Something is deeply wrong with {p}.",
-            "Watch this one with the lights on.",
-            "It started quietly three years ago.",
-            "Nobody believed the first witnesses.",
-            "Then the reports began multiplying overnight.",
-            "The footage still cannot be explained.",
-            "Investigators found something they should not have.",
-            f"And {p} was only the beginning.",
-            "Sleep with the lights on tonight.",
-            "You have officially been warned.",
-            "Part two is somehow more disturbing.",
-            "Subscribe if you actually dare.",
-            "Do not say we did not warn you.",
-            "They may already be watching this too."],
-        "business":[
-            f"The smartest operators deeply understand {p}.",
-            "Here is what business schools never teach you.",
-            "Rule one — protect your time at all costs.",
-            "Rule two — cash flow is always the king.",
-            "Most businesses fail at this one critical step.",
-            f"Those who master {p} scale fast and hard.",
-            "The difference is never talent it is systems.",
-            "Build once. Profit for years.",
-            "Your network is worth more than your degree.",
-            "Double down ruthlessly on what is working.",
-            "Cut everything else without mercy.",
-            "This is the advice I needed at twenty two.",
-            "Follow for more real business frameworks.",
-            "Save this and review it every single quarter."],
-    }
-    lines = banks.get(mood, banks["motivational"])
-    return lines[:count]
-
-async def generate_script_claude(topic: str, mood: str, length_seconds: int, language: str) -> list:
-    target = max(5, min(14, length_seconds // 3))
-    lang_name = LANG_NAMES.get(language, "English")
-    tone = MOODS.get(mood, MOODS["motivational"])["tone"]
-    prompt = f"""You are a viral YouTube Shorts scriptwriter.
-Topic: {topic}
-Mood: {tone}
-Language: {lang_name}
-Number of caption lines: exactly {target}
-Rules:
-- Each line must be 6 to 14 words (shown as on-screen caption)
-- Write entirely in {lang_name}
-- Tone must be: {tone}
-- Make each line punchy, emotionally engaging, shareable
-- End with a strong call-to-action
-Return ONLY a valid JSON array of strings. No markdown, no explanation.
-Example: ["Line one here.", "Line two here.", "Call to action."]"""
-    async with httpx.AsyncClient(timeout=25) as client:
-        r = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_API_KEY,
-                     "anthropic-version":"2023-06-01","content-type":"application/json"},
-            json={"model":"claude-sonnet-4-20250514","max_tokens":800,
-                  "messages":[{"role":"user","content":prompt}]},
-        )
-        if r.status_code != 200:
-            raise ValueError(f"Claude API {r.status_code}: {r.text[:200]}")
-        raw = r.json()["content"][0]["text"].strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"): raw = raw[4:]
-        sentences = json.loads(raw.strip())
-        if not isinstance(sentences, list) or len(sentences) < 2:
-            raise ValueError("Invalid response from Claude")
-        return [str(s) for s in sentences]
-
-# ───────────────────────────────────────────────
-# Audio
-# ───────────────────────────────────────────────
-# ───────────────────────────────────────────────
-# Audio  (Google TTS — free, online, reliable)
-# ───────────────────────────────────────────────
-def _gtts_lang_tld(voice_id: str):
-    """Return (lang, tld) for the given voice id."""
-    return _VOICE_MAP.get(voice_id, ("en", "com"))
-
-def _make_audio_sync(text: str, voice_id: str, out: Path) -> None:
-    """Blocking gTTS call — run in thread executor."""
-    lang, tld = _gtts_lang_tld(voice_id)
-    tts = gTTS(text=text, lang=lang, tld=tld, slow=False)
-    tts.save(str(out))
-
-async def make_audio(text: str, voice_id: str, out: Path) -> None:
-    loop = asyncio.get_event_loop()
-    try:
-        await loop.run_in_executor(None, _make_audio_sync, text, voice_id, out)
-    except Exception as e:
-        raise RuntimeError(f"gTTS failed: {e}")
-
-# ───────────────────────────────────────────────
-# Pexels background
-# ───────────────────────────────────────────────
-def _pexels_best_file(video: dict) -> Optional[dict]:
-    """
-    Pick the best video file from a Pexels video object.
-    Priority: portrait (w <= h) → highest resolution ≤ 1920px tall → largest file.
-    """
-    files = video.get("video_files", [])
-    if not files:
-        return None
-    portrait = [f for f in files if f.get("width", 9999) <= f.get("height", 0)]
-    pool = portrait if portrait else files
-    # prefer HD but not 4K (too slow to download); sort by height desc, cap at 1920
-    pool = [f for f in pool if f.get("height", 0) <= 1920] or pool
-    pool.sort(key=lambda f: f.get("height", 0), reverse=True)
-    return pool[0]
-
-async def _pexels_search(client: httpx.AsyncClient, query: str,
-                         per_page: int = 10) -> list:
-    """Run a single Pexels video search and return the videos list."""
-    r = await client.get(
-        "https://api.pexels.com/videos/search",
-        headers={"Authorization": PEXELS_API_KEY},
-        params={"query": query, "per_page": per_page,
-                "orientation": "portrait", "size": "medium"},
-    )
-    if r.status_code != 200:
-        print(f"  Pexels HTTP {r.status_code} for query: {query}")
-        return []
-    return r.json().get("videos", [])
-
-async def download_pexels(topic: str, mood_query: str, out: Path) -> bool:
-    """
-    Search Pexels for a video relevant to the user's topic.
-    Strategy:
-      1. Try the full topic string (most relevant)
-      2. Try first 3 words of topic (broader)
-      3. Fall back to mood keyword
-    Downloads the highest-quality portrait file found.
-    """
-    if not PEXELS_API_KEY or PEXELS_API_KEY == "your-pexels-key-here":
-        return False
-
-    # Build search queries from most-specific to least-specific
-    topic_clean = " ".join(topic.strip().split()[:6])          # first 6 words
-    topic_short = " ".join(topic.strip().split()[:3])          # first 3 words
-    queries = []
-    if topic_clean:
-        queries.append(topic_clean)
-    if topic_short and topic_short != topic_clean:
-        queries.append(topic_short)
-    queries.append(mood_query)                                   # mood fallback
-    queries.append("nature cinematic vertical")                  # last resort
-
-    try:
-        async with httpx.AsyncClient(timeout=50) as client:
-            for query in queries:
-                print(f"  🔍 Pexels: '{query}'")
-                videos = await _pexels_search(client, query)
-                if not videos:
-                    continue
-                # Prefer portrait-oriented videos
-                portrait_vids = [v for v in videos
-                                 if v.get("width", 9999) <= v.get("height", 0)]
-                pool = portrait_vids if portrait_vids else videos
-                random.shuffle(pool)          # vary results across generations
-                for video in pool[:5]:
-                    chosen = _pexels_best_file(video)
-                    if not chosen:
-                        continue
-                    url = chosen.get("link") or chosen.get("url", "")
-                    if not url:
-                        continue
-                    print(f"  ⬇️  Downloading {chosen.get('height',0)}p portrait…")
-                    try:
-                        async with client.stream("GET", url,
-                                                 follow_redirects=True,
-                                                 timeout=60) as resp:
-                            if resp.status_code == 200:
-                                with open(out, "wb") as f:
-                                    async for chunk in resp.aiter_bytes(131072):
-                                        f.write(chunk)
-                                if out.stat().st_size > 100_000:
-                                    print(f"  ✅ {out.stat().st_size/1_048_576:.1f} MB")
-                                    return True
-                    except Exception as e:
-                        print(f"  Download error: {e}")
-                        continue
-        return False
-    except Exception as e:
-        print(f"Pexels error: {e}")
-        return False
-
-# ───────────────────────────────────────────────
-# AI Music — Jamendo + Claude
-# ───────────────────────────────────────────────
-# Jamendo is a free CC-licensed music platform with a public API.
-# No user API key needed — we use their free public client_id.
-JAMENDO_CLIENT_ID = "b6747d04"   # Jamendo's freely usable public test client ID
-
-# Mood → Jamendo tag/genre hints (used as fallback if Claude is unavailable)
-MOOD_MUSIC_TAGS = {
-    "motivational": ["energetic", "inspiring", "upbeat", "powerful"],
-    "calm":         ["ambient", "relaxing", "peaceful", "meditation"],
-    "thriller":     ["dark", "suspense", "dramatic", "cinematic"],
-    "educational":  ["corporate", "background", "neutral", "informative"],
-    "comedy":       ["funny", "playful", "quirky", "upbeat"],
-    "documentary":  ["cinematic", "atmospheric", "world", "acoustic"],
-    "horror":       ["dark", "eerie", "scary", "ambient"],
-    "business":     ["corporate", "professional", "motivational", "piano"],
-}
-
-async def _claude_music_query(mood: str, topic: str) -> str:
-    """
-    Ask Claude for the single best Jamendo search tag for this mood+topic.
-    Returns a plain string like 'energetic' or 'dark ambient'.
-    Falls back to first mood tag if Claude unavailable or times out.
-    """
-    if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "your-anthropic-key-here":
-        return MOOD_MUSIC_TAGS.get(mood, ["background"])[0]
-
-    prompt = (
-        f"You are a music supervisor for YouTube Shorts.\n"
-        f"Video mood: {mood}\nVideo topic: {topic}\n\n"
-        f"Pick ONE short music search tag (1-2 words) from Jamendo that best fits this video. "
-        f"Reply with ONLY the tag, nothing else. Examples: energetic, dark ambient, "
-        f"acoustic guitar, epic orchestral, lo-fi chill, upbeat pop, cinematic suspense."
-    )
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": ANTHROPIC_API_KEY,
-                         "anthropic-version": "2023-06-01",
-                         "content-type": "application/json"},
-                json={"model": "claude-haiku-4-5-20251001",
-                      "max_tokens": 20,
-                      "messages": [{"role": "user", "content": prompt}]},
-            )
-            if r.status_code == 200:
-                tag = r.json()["content"][0]["text"].strip().lower()
-                tag = tag.strip('"\'').split("\n")[0][:40]
-                log.info("🎵  Claude music tag: '%s'", tag)
-                return tag
-    except Exception as e:
-        log.warning("Claude music query failed: %s", e)
-    return MOOD_MUSIC_TAGS.get(mood, ["background"])[0]
-
-async def _search_jamendo(tag: str, duration_min: int = 60) -> Optional[dict]:
-    """
-    Search Jamendo for a CC-licensed track matching the tag.
-    Returns the best track dict or None.
-    """
-    params = {
-        "client_id":    JAMENDO_CLIENT_ID,
-        "format":       "json",
-        "limit":        "10",
-        "search":       tag,
-        "include":      "musicinfo",
-        "audioformat":  "mp32",           # 128kbps MP3 — small, fast
-        "durationbetween": f"{duration_min}_600",
-        "order":        "popularity_total",
-        "tags":         tag,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get("https://api.jamendo.com/v3.0/tracks/", params=params)
-            if r.status_code != 200:
-                log.warning("Jamendo HTTP %s", r.status_code)
-                return None
-            results = r.json().get("results", [])
-            if not results:
-                return None
-            # Pick a random track from top 5 for variety
-            return random.choice(results[:5])
-    except Exception as e:
-        log.warning("Jamendo search error: %s", e)
-        return None
-
-async def fetch_ai_music(mood: str, topic: str, duration: float) -> Optional[Path]:
-    """
-    Full pipeline:
-      1. Ask Claude for the best music tag
-      2. Search Jamendo for a matching CC-licensed track
-      3. Download & cache to MUSIC_DIR/{mood}.mp3
-      4. Return the path, or None if anything fails
-
-    Cache: if the mood file already exists and is > 100 KB, skip download.
-    This means the first generation per mood hits the network;
-    subsequent ones reuse the cached file instantly.
-    """
-    cache_path = MUSIC_DIR / f"{mood}.mp3"
-    if cache_path.exists() and cache_path.stat().st_size > 100_000:
-        log.info("🎵  Using cached music: %s", cache_path.name)
-        return cache_path
-
-    log.info("🎵  Fetching AI music for mood='%s' topic='%s'", mood, topic[:40])
-
-    # Step 1 — Claude picks the best search tag
-    tag = await _claude_music_query(mood, topic)
-
-    # Step 2 — search Jamendo; if no results, try fallback tags
-    track = await _search_jamendo(tag, duration_min=max(30, int(duration)))
-    if not track:
-        log.info("🎵  No results for '%s', trying mood fallback tags", tag)
-        for fallback in MOOD_MUSIC_TAGS.get(mood, ["background"]):
-            track = await _search_jamendo(fallback, duration_min=20)
-            if track:
-                break
-
-    if not track:
-        log.warning("🎵  No Jamendo track found for mood=%s", mood)
-        return None
-
-    audio_url = track.get("audiodownload") or track.get("audio", "")
-    if not audio_url:
-        log.warning("🎵  Track has no download URL")
-        return None
-
-    track_name = track.get("name", "unknown")
-    artist     = track.get("artist_name", "unknown")
-    license_url= track.get("license_ccurl", "CC")
-    log.info("🎵  '%s' by %s  [%s]", track_name, artist, license_url)
-
-    # Step 3 — download
-    try:
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            async with client.stream("GET", audio_url) as resp:
-                if resp.status_code != 200:
-                    log.warning("🎵  Download HTTP %s", resp.status_code)
-                    return None
-                with open(cache_path, "wb") as f:
-                    async for chunk in resp.aiter_bytes(65536):
-                        f.write(chunk)
-        size_kb = cache_path.stat().st_size // 1024
-        log.info("🎵  Downloaded %d KB → %s", size_kb, cache_path)
-        return cache_path
-    except Exception as e:
-        log.warning("🎵  Music download failed: %s", e)
-        if cache_path.exists():
-            cache_path.unlink(missing_ok=True)
-        return None
-
-# ───────────────────────────────────────────────
-# Frame rendering
-# ───────────────────────────────────────────────
-# ───────────────────────────────────────────────────────
-# Fast rendering — pure FFmpeg (no per-frame Python loop)
-# ───────────────────────────────────────────────────────
-
-# ──────────────────────────────────────────────────────────────────
-# Fast rendering  (~10–20 s for a 30-second Short)
-#
-# Strategy:
-#   • Background  → FFmpeg lavfi `color` source (animated gradient via
-#                   geq on a tiny 2-frame PNG strip) — no zoompan ever
-#   • Pexels bg   → stream_loop + scale/crop + fast colorbalance tint
-#   • Captions    → ASS subtitle file burned with libass  (single filter,
-#                   GPU-friendly; far faster than chained drawtext)
-#   • Encoder     → libx264 -preset ultrafast -crf 26 -threads 0
-# ──────────────────────────────────────────────────────────────────
-
-def _lerp(c1, c2, t):
-    return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
-
-def _make_gradient_png(w: int, h: int, colors: list, out: Path) -> None:
-    """Fast gradient PNG — one horizontal scanline per row, no loops."""
-    c0, c1, c2 = colors
-    arr = np.zeros((h, w, 3), dtype=np.uint8)
-    for y in range(h):
-        t  = y / h
-        rc = _lerp(c0, c1, t * 2) if t < 0.5 else _lerp(c1, c2, (t - 0.5) * 2)
-        arr[y, :] = rc
-    Image.fromarray(arr).save(str(out))
-
-def _ass_escape(text: str) -> str:
-    """Minimal ASS escape — only special chars that break the format."""
-    return (text
-        .replace("\\", "")
-        .replace("{",  "")
-        .replace("}",  "")
-        .replace("\n", " ")
-        .strip())
-
-def _seconds_to_ass(t: float) -> str:
-    h  = int(t // 3600)
-    m  = int((t % 3600) // 60)
-    s  = t % 60
-    return f"{h}:{m:02d}:{s:06.3f}"  # e.g. 0:00:03.250
-
-def _write_ass(sentences: list, duration: float, out: Path,
-               font_name: str = "Arial", font_size: int = 72,
-               style_id: str = "box", placement_id: str = "bottom") -> None:
-    """
-    Write an ASS subtitle file with the chosen visual style and placement.
-    Supports 8 styles × 3 placements configured via CAPTION_STYLES / CAPTION_PLACEMENTS.
-    """
-    n       = len(sentences)
-    seg     = duration / n
-    fade_ms = min(250, int(seg * 150))
-
-    s  = CAPTION_STYLES.get(style_id,     CAPTION_STYLES["box"])
-    p  = CAPTION_PLACEMENTS.get(placement_id, CAPTION_PLACEMENTS["bottom"])
-
-    fs       = s.get("fontsize", font_size)
-    bold     = s.get("bold", -1)
-    italic   = s.get("italic", 0)
-    bstyle   = s.get("border_style", 3)
-    outline  = s.get("outline", 0)
-    shadow   = s.get("shadow", 6)
-    align    = p["alignment"]
-    margin_v = p["margin_v"]
-
-    header = (
-        "[Script Info]\n"
-        "ScriptType: v4.00+\n"
-        f"PlayResX: {VIDEO_WIDTH}\n"
-        f"PlayResY: {VIDEO_HEIGHT}\n"
-        "WrapStyle: 1\n"
-        "ScaledBorderAndShadow: yes\n\n"
-        "[V4+ Styles]\n"
-        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,"
-        "OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,"
-        "ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
-        "Alignment,MarginL,MarginR,MarginV,Encoding\n"
-        f"Style: Cap,{font_name},{fs},"
-        f"{s['primary']},{s['secondary']},{s['outline_col']},{s['back_col']},"
-        f"{bold},{italic},0,0,"
-        f"100,100,2,0,{bstyle},{outline},{shadow},"
-        f"{align},60,60,{margin_v},1\n\n"
-        "[Events]\n"
-        "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
-    )
-
-    events = []
-    for i, raw in enumerate(sentences):
-        t0  = i * seg
-        t1  = t0 + seg
-        txt = _ass_escape(raw)
-        tag = f"{{\\fad({fade_ms},{fade_ms})}}"
-        events.append(
-            f"Dialogue: 0,{_seconds_to_ass(t0)},{_seconds_to_ass(t1)},"
-            f"Cap,,0,0,0,,{tag}{txt}"
-        )
-    out.write_text(header + "\n".join(events), encoding="utf-8")
-
-def _find_font_name() -> str:
-    """Return a font name available on the system (for ASS header)."""
-    for name, path in [
-        ("Arial",           r"C:/Windows/Fonts/arial.ttf"),
-        ("Calibri",         r"C:/Windows/Fonts/calibri.ttf"),
-        ("Verdana",         r"C:/Windows/Fonts/verdana.ttf"),
-        ("DejaVu Sans",     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        ("Liberation Sans", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
-        ("Ubuntu",          "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf"),
-    ]:
-        if os.path.exists(path):
-            return name
-    return "Arial"   # fallback; libass will pick any sans-serif
-
-def _ffmpeg_escape_path(p) -> str:
-    """
-    Escape a file path for use inside an FFmpeg -vf filter string.
-    NOTE: This is only used as a fallback. The preferred approach is
-    to pass just the filename and set cwd= in subprocess.run().
-    """
-    s = str(p).replace("\\", "/")
-    if len(s) >= 2 and s[1] == ":":
-        s = s[0] + "\\:" + s[2:]
-    s = s.replace(" ", "\\ ")
-    return s
+def _cleanup(keep: int = 10) -> None:
+    dirs = sorted(OUTPUT_DIR.glob("*"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    for d in dirs[keep:]:
+        if d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)
 
 
-def build_video(sentences, audio_path, output_path, duration, mood,
-                show_captions, bg_path=None,
-                caption_style="box", caption_placement="bottom",
-                music_path=None, music_volume=20):
-    """
-    YouTube-Shorts-style renderer — pure FFmpeg, no per-frame Python.
+def _clamp_speed(v: float) -> float:
+    return max(0.25, min(4.0, v))
 
-    KEY TRICK for Windows paths with spaces / drive letters:
-      All file arguments use absolute paths on the -i / -vf flags.
-      The ASS subtitle filter uses ONLY the bare filename (subs.ass)
-      and subprocess.run is called with cwd=<output_dir>, so FFmpeg
-      finds the file in its working directory — no path escaping at all.
+def _clamp_pos(pos: str) -> str:
+    return pos if pos in CAPTION_POSITIONS else "bottom"
 
-    Pexels path   : full-bleed portrait video → slight dim → captions
-    Gradient path : animated gradient PNG → captions
-    Music         : optional background track mixed at music_volume %
-    Encode        : libx264 veryfast/ultrafast, ~10–25 s render time
-    """
-    cfg        = MOODS.get(mood, MOODS["motivational"])
-    colors     = cfg["colors"]
-    work_dir   = Path(output_path).parent
-    ass_fname  = "subs.ass"
-    ass_path   = work_dir / ass_fname
+def _clamp_style(sty: str) -> str:
+    return sty if sty in CAPTION_STYLES else "standard"
 
-    # ── ASS subtitle ─────────────────────────────────────────────────
-    if show_captions and sentences:
-        font_name  = _find_font_name()
-        _write_ass(sentences, duration, ass_path, font_name=font_name,
-                   style_id=caption_style, placement_id=caption_placement)
-        ass_filter = "ass=" + ass_fname
-    else:
-        ass_filter = ""
 
-    use_pexels = bool(bg_path and Path(bg_path).exists())
-    use_music  = bool(music_path and Path(music_path).exists() and music_volume > 0)
-
-    # ── Audio mixing ─────────────────────────────────────────────────
-    # With music:  voice (-1 dB) + music (-∞ to -20 dB) → amix → AAC
-    # Without:     voice straight through → AAC
-    if use_music:
-        vol = max(0.01, min(1.0, music_volume / 100))
-        # amix: input 0 = voice (weight 1), input 1 = music (weight = vol)
-        # duration=first means output length = voice length
-        audio_filter = (
-            f"[0:a]volume=1.0[v];"
-            f"[1:a]volume={vol:.3f},aloop=loop=-1:size=2e+09[m];"
-            f"[v][m]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-        )
-    else:
-        audio_filter = None
-
-    if use_pexels:
-        scale_crop = (
-            "scale={W}:{H}:force_original_aspect_ratio=increase,"
-            "crop={W}:{H}"
-        ).format(W=VIDEO_WIDTH, H=VIDEO_HEIGHT)
-        eq_filter = "eq=brightness=-0.06:saturation=1.1"
-        vf_parts  = [scale_crop, eq_filter]
-        if ass_filter:
-            vf_parts.append(ass_filter)
-
-        if use_music:
-            cmd = [
-                "ffmpeg", "-y",
-                "-stream_loop", "-1", "-i", str(bg_path),
-                "-i", str(audio_path),
-                "-stream_loop", "-1", "-i", str(music_path),
-                "-filter_complex", audio_filter,
-                "-vf", ",".join(vf_parts),
-                "-map", "0:v", "-map", "[aout]",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k",
-                "-t", str(duration), "-shortest",
-                "-movflags", "+faststart",
-                str(output_path),
-            ]
-        else:
-            cmd = [
-                "ffmpeg", "-y",
-                "-stream_loop", "-1", "-i", str(bg_path),
-                "-i", str(audio_path),
-                "-vf", ",".join(vf_parts),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k",
-                "-t", str(duration), "-shortest",
-                "-movflags", "+faststart",
-                str(output_path),
-            ]
-    else:
-        grad_path = work_dir / "grad.png"
-        _make_gradient_png(VIDEO_WIDTH, VIDEO_HEIGHT, colors, grad_path)
-        vf_parts = []
-        if ass_filter:
-            vf_parts.append(ass_filter)
-        vf_str = ",".join(vf_parts) if vf_parts else "null"
-
-        if use_music:
-            cmd = [
-                "ffmpeg", "-y",
-                "-loop", "1", "-framerate", str(FPS), "-i", str(grad_path),
-                "-i", str(audio_path),
-                "-stream_loop", "-1", "-i", str(music_path),
-                "-filter_complex", audio_filter,
-                "-vf", vf_str,
-                "-map", "0:v", "-map", "[aout]",
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-                "-crf", "22", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k",
-                "-t", str(duration), "-shortest",
-                "-movflags", "+faststart",
-                str(output_path),
-            ]
-        else:
-            cmd = [
-                "ffmpeg", "-y",
-                "-loop", "1", "-framerate", str(FPS), "-i", str(grad_path),
-                "-i", str(audio_path),
-                "-vf", vf_str,
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-                "-crf", "22", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k",
-                "-t", str(duration), "-shortest",
-                "-movflags", "+faststart",
-                str(output_path),
-            ]
-
-    log.info("FFmpeg: %s | captions=%s | music=%s",
-             "Pexels" if use_pexels else "gradient",
-             "on" if show_captions else "off",
-             f"{music_volume}%" if use_music else "off")
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=300, cwd=str(work_dir),
-    )
-    if result.returncode != 0:
-        raise RuntimeError("FFmpeg failed:\n" + result.stderr[-3000:])
-
-# ═══════════════════════════════════════════════
-# Routes
-# ═══════════════════════════════════════════════
+# ─── Static routes ────────────────────────────────────────────────
 
 @app.get("/")
 async def serve_ui():
-    html_file = STATIC_DIR / "index.html"
-    if not html_file.exists():
-        raise HTTPException(404, "static/index.html not found. Please create it.")
-    return FileResponse(str(html_file))
+    f = STATIC_DIR / "index.html"
+    if not f.exists():
+        raise HTTPException(404, "static/index.html not found")
+    return FileResponse(str(f))
 
-@app.get("/health")
-async def health():
-    """Render health check + quick status summary."""
-    ok_ff, ok_fp = check_ffmpeg()
-    return JSONResponse({
-        "status":   "ok",
-        "ffmpeg":   ok_ff,
-        "ffprobe":  ok_fp,
-        "claude":   ANTHROPIC_API_KEY != "your-anthropic-key-here",
-        "pexels":   PEXELS_API_KEY    != "your-pexels-key-here",
-        "voices":   len(VOICES),
-        "music_tracks": len(list(MUSIC_DIR.glob("*.mp3"))),
-    })
 
-@app.get("/test")
-async def test():
-    """Quick smoke test — open this URL in your browser to confirm the server is running."""
-    ok_ff, ok_fp = check_ffmpeg()
-    return JSONResponse({
-        "server": "ok",
-        "ffmpeg": ok_ff,
-        "ffprobe": ok_fp,
-        "python": sys.version,
-        "output_dir": str(OUTPUT_DIR),
-        "output_writable": os.access(str(OUTPUT_DIR), os.W_OK),
-    })
+# ─── Catalogue endpoints ──────────────────────────────────────────
 
-@app.get("/music-status")
-async def music_status():
-    """Return AI music availability and cached tracks."""
-    cached = {}
-    for mood_id in MOODS:
-        f = MUSIC_DIR / f"{mood_id}.mp3"
-        cached[mood_id] = {"cached": f.exists(), "size_kb": f.stat().st_size // 1024 if f.exists() else 0}
-    return {
-        "source":    "Jamendo CC-licensed + Claude AI selection",
-        "jamendo":   True,
-        "claude_ai": ANTHROPIC_API_KEY != "your-anthropic-key-here",
-        "cached":    cached,
-        "music_dir": str(MUSIC_DIR),
-    }
-
-@app.delete("/music-cache")
-async def clear_music_cache():
-    """Clear all cached music tracks so they are re-fetched on next render."""
-    removed = []
-    for f in MUSIC_DIR.glob("*.mp3"):
-        f.unlink()
-        removed.append(f.name)
-    return {"cleared": removed}
-
-@app.get("/voices")
-async def get_voices():
+@app.get("/api/voices")
+async def api_voices():
     return {"voices": VOICES}
 
-@app.get("/moods")
-async def get_moods():
-    return {"moods": [{"id":k,"label":v["label"]} for k,v in MOODS.items()]}
 
-@app.get("/caption-styles")
-async def get_caption_styles():
-    return {"styles": [
-        {"id": k, "label": v["label"], "desc": v["desc"]}
-        for k, v in CAPTION_STYLES.items()
-    ]}
+@app.get("/api/styles")
+async def api_styles():
+    return {"styles": [{"id": k, "label": v["label"]}
+                        for k, v in VIDEO_STYLES.items()]}
 
-@app.get("/caption-placements")
-async def get_caption_placements():
-    return {"placements": [
-        {"id": k, "label": v["label"]}
-        for k, v in CAPTION_PLACEMENTS.items()
-    ]}
 
-@app.post("/voice-preview")
-async def voice_preview(req: VoicePreviewRequest):
+@app.get("/api/voice-speeds")
+async def api_voice_speeds():
+    return {"speeds": [{"id": k, "label": v["label"], "value": v["value"]}
+                        for k, v in VOICE_SPEEDS.items()]}
+
+
+@app.get("/api/caption-positions")
+async def api_caption_positions():
+    return {"positions": [{"id": k, "label": v["label"], "desc": v["desc"]}
+                           for k, v in CAPTION_POSITIONS.items()]}
+
+
+@app.get("/api/caption-styles")
+async def api_caption_styles():
+    return {"styles": [{"id": k, "label": v["label"],
+                         "desc": v["desc"], "emoji": v["emoji"]}
+                        for k, v in CAPTION_STYLES.items()]}
+
+
+# ─── Voice preview ────────────────────────────────────────────────
+
+@app.post("/api/preview-voice")
+async def api_preview_voice(req: PreviewRequest):
     valid = {v["id"] for v in VOICES}
     if req.voice_id not in valid:
         raise HTTPException(400, f"Unknown voice: {req.voice_id}")
-    text = VOICE_PREVIEW_TEXT.get(req.lang, VOICE_PREVIEW_TEXT["en"])
-    preview_dir = OUTPUT_DIR / "previews"
-    preview_dir.mkdir(exist_ok=True)
-    # Use voice_id as filename key (safe chars only)
-    safe_id = req.voice_id.replace("-", "_")
-    out = preview_dir / f"preview_{safe_id}.mp3"
+    text    = _get_preview_text(req.voice_id)
+    out_dir = OUTPUT_DIR / "previews"
+    out_dir.mkdir(exist_ok=True)
+    safe    = "".join(c if c.isalnum() else "_" for c in req.voice_id)
+    out     = out_dir / f"prev_{safe}.mp3"
     try:
-        await make_audio(text, req.voice_id, out)
+        await synthesize(text, req.voice_id, out)
     except Exception as e:
         raise HTTPException(500, f"Preview failed: {e}")
     if not out.exists():
-        raise HTTPException(500, "Preview audio not created.")
-    return FileResponse(str(out), media_type="audio/mpeg", filename="preview.mp3",
+        raise HTTPException(500, "Preview not created")
+    return FileResponse(str(out), media_type="audio/mpeg",
                         headers={"Cache-Control": "no-cache"})
 
-@app.post("/api/generate-script")
-@limiter.limit("20/minute")
-async def api_generate_script(req: ScriptRequest, request: Request):
+
+# ─── Script generation ────────────────────────────────────────────
+
+@app.post("/api/script")
+async def api_script(req: ScriptRequest):
     if not req.topic or len(req.topic.strip()) < 3:
-        raise HTTPException(400, "Topic is too short.")
-    use_claude = ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "your-anthropic-key-here"
-    if use_claude:
-        try:
-            sentences = await generate_script_claude(req.topic, req.mood, req.length_seconds, req.language)
-            return {"status":"success","script":sentences,"source":"claude-ai"}
-        except Exception as e:
-            print(f"Claude fallback: {e}")
-    sentences = fallback_script(req.topic, req.mood, req.length_seconds)
-    return {"status":"success","script":sentences,"source":"template"}
+        raise HTTPException(400, "Topic too short.")
+    dur = max(30, min(180, req.duration_sec))
+    try:
+        script = await generate_script(
+            req.topic.strip(), req.style, dur,
+            gemini_key  = GEMINI_API_KEY,
+            groq_key    = GROQ_API_KEY,
+            shorts_mode = req.shorts_mode,
+        )
+        source = script.get("_source", "local_template")
+        return {"status": "ok", "script": script, "source": source,
+                "shorts_mode": req.shorts_mode}
+    except Exception as e:
+        log.error("Script error: %s", e)
+        raise HTTPException(500, f"Script generation failed: {e}")
 
-@app.post("/generate", response_model=GenerateResponse)
-@limiter.limit("5/minute")
-async def generate_video(req: GenerateRequest, request: Request):
-    if not req.script or len(req.script) < 2:
-        raise HTTPException(400, "Script needs at least 2 lines.")
-    ok_ff,ok_fp = check_ffmpeg()
-    if not ok_ff: raise HTTPException(503,"FFmpeg not found. Install from https://ffmpeg.org")
-    if not ok_fp: raise HTTPException(503,"FFprobe not found. Ensure FFmpeg/bin is in PATH.")
 
-    # Block if 2 renders already in progress — queue the request
-    if RENDER_SEMAPHORE._value == 0:
-        log.warning("Render queue full — request queued from %s", request.client.host)
+# ─── Main generation pipeline ─────────────────────────────────────
 
-    length = max(10, min(65, req.length_seconds))
-    ts = int(time.time()*1000)
+@app.post("/api/generate", response_model=GenerateResponse)
+async def api_generate(req: GenerateRequest):
+    if not req.topic or not req.script:
+        raise HTTPException(400, "topic and script required.")
+
+    ok_ff, ok_fp = _ffmpeg_ok()
+    if not ok_ff:
+        raise HTTPException(503, "FFmpeg not found. Install: https://ffmpeg.org")
+    if not ok_fp:
+        raise HTTPException(503, "FFprobe not found (included with FFmpeg).")
+
+    segments = req.script.get("segments", [])
+    if len(segments) < 2:
+        raise HTTPException(400, "Need at least 2 segments.")
+
+    # Sanitise inputs
+    voice_speed  = _clamp_speed(req.voice_speed)
+    shorts       = req.shorts_mode
+    style        = req.style
+
+    # Auto-apply viral defaults: viral_center position + viral caption style
+    if style in _VIRAL_CAP_DEFAULTS:
+        default_pos, default_cs = _VIRAL_CAP_DEFAULTS[style]
+        cap_position = req.cap_position if req.cap_position not in ("bottom", "standard") \
+                       else default_pos
+        cap_style = req.cap_style if req.cap_style not in ("standard",) \
+                    else default_cs
+    else:
+        cap_position = _clamp_pos(req.cap_position)
+        cap_style    = _clamp_style(req.cap_style)
+        # Shorts default
+        if shorts and cap_style == "standard":
+            cap_style = "shorts"
+
+    custom_x = max(0, min(SV_W if shorts else 1920, req.resolved_x()))
+    custom_y = max(0, min(SV_H if shorts else 1080, req.resolved_y()))
+
+    # Hard-cut mode for viral/lifestyle — matches reference video
+    hard_cut = style in _HARD_CUT_STYLES
+
+    ts   = int(time.time() * 1000)
     wdir = OUTPUT_DIR / str(ts)
     wdir.mkdir(parents=True, exist_ok=True)
-    audio_path = wdir/"voice.mp3"; bg_path=wdir/"bg.mp4"; video_path=wdir/"shorts.mp4"
 
-    valid = {v["id"] for v in VOICES}
-    voice = req.voice if req.voice in valid else "en-US-1"
-    full_text = " ".join(str(s) for s in req.script)
+    valid_voices = {v["id"] for v in VOICES}
+    voice_id     = req.voice_id if req.voice_id in valid_voices else "en-us"
+    title        = req.script.get("title", req.topic)
 
-    log.info("🎙  Voice: %s", voice)
+    log.info("=" * 55)
+    log.info("Topic       : %s", req.topic[:60])
+    log.info("Segs        : %d | Voice: %s | Style: %s",
+             len(segments), voice_id, style)
+    log.info("Shorts mode : %s | Hard cut: %s", shorts, hard_cut)
+    log.info("Speed: %.2fx | Cap: %s / %s", voice_speed, cap_position, cap_style)
+
     try:
-        await make_audio(full_text, voice, audio_path)
-    except Exception as e:
-        log.error(traceback.format_exc())
-        raise HTTPException(500, f"Voice generation failed: {e}. Check internet connection.")
+        # ── Step 1: Voice synthesis ──────────────────────────────
+        log.info("Step 1/5: Voice synthesis (speed=%.2fx)", voice_speed)
+        audio_path, timestamps = await generate_all(
+            segments, voice_id, wdir, voice_speed=voice_speed)
+        total_dur = get_duration(audio_path)
+        log.info("  Audio: %.1fs", total_dur)
 
-    if not audio_path.exists() or audio_path.stat().st_size < 500:
-        raise HTTPException(500,"Audio file not created.")
+        # ── Step 2: Download Pexels clips ────────────────────────
+        log.info("Step 2/5: Fetching Pexels clips (%d segments)", len(segments))
+        clip_paths = await download_all_clips(
+            segments, wdir, PEXELS_API_KEY, req.topic, shorts_mode=shorts)
 
-    try: duration = get_audio_duration(audio_path)
-    except Exception: duration = max(len(req.script)*2.2, float(length))
-    duration = max(duration, float(length)*0.8)
-    log.info("⏱  %.1fs", duration)
+        # ── Step 3: Process clips ─────────────────────────────────
+        # Each narration segment maps to ONE processed clip.
+        # Motion cycles through MOTION_EFFECTS deterministically so every
+        # consecutive clip gets a different camera direction — no random repeats.
+        # First clip always uses 'hook' (fast punch zoom-out) for max impact.
+        # If segment duration > 4s, the zoomed clip loops to fill the full length.
+        log.info("Step 3/5: Processing clips (shorts=%s  style=%s)", shorts, style)
+        processed = []
+        colors    = STYLE_COLORS.get(style, STYLE_COLORS.get("educational",
+                                                              ((8, 18, 55), (25, 55, 115))))
 
-    mood_query = MOODS.get(req.mood, MOODS["motivational"])["query"]
-    topic_str  = req.topic.strip() if req.topic else " ".join(str(s) for s in req.script[:2])
-    log.info("🔎  Topic: '%s'", topic_str[:60])
-    has_bg = await download_pexels(topic_str, mood_query, bg_path)
-    log.info("🎬  bg: %s", "Pexels ✅" if has_bg else "gradient")
+        # Render motion over at most 4s — keeps energy tight even on long narrations
+        CLIP_RENDER_CAP = 4.0
 
-    # ── AI Background Music (Claude + Jamendo) ───────────────────────
-    music_path = None
-    if req.music_volume > 0:
-        music_path = await fetch_ai_music(req.mood, topic_str, duration)
-    has_music = music_path is not None and req.music_volume > 0
-    log.info("🎵  music: %s", f"{music_path.name} @ {req.music_volume}%" if has_music else "off")
+        for i, seg in enumerate(segments):
+            t0, t1  = timestamps[i]
+            seg_dur = max(1.5, t1 - t0)
+            raw     = clip_paths[i]
+            proc    = wdir / f"seg_{i:03d}_proc.mp4"
 
-    log.info("🚀  Rendering…")
-    try:
-        async with RENDER_SEMAPHORE:        # max 2 concurrent FFmpeg processes
-            loop = asyncio.get_event_loop()
-            fn = functools.partial(
-                build_video, req.script, audio_path, video_path,
-                duration, req.mood, req.show_captions,
-                bg_path if has_bg else None,
-                req.caption_style, req.caption_placement,
-                music_path if has_music else None,
-                req.music_volume,
+            # First clip: hook punch.  Remaining: deterministic cycle so
+            # zoom_in / zoom_out / pan_left / pan_right / … never repeat back-to-back.
+            if i == 0:
+                motion = "hook"
+            else:
+                motion = MOTION_EFFECTS[((i - 1) % len(MOTION_EFFECTS))]
+
+            render_dur = min(seg_dur, CLIP_RENDER_CAP)
+
+            if raw and raw.exists() and raw.stat().st_size > 50_000:
+                try:
+                    if shorts:
+                        scale_and_crop_vertical(raw, proc, render_dur,
+                                                style=style, motion=motion)
+                    else:
+                        scale_and_crop(raw, proc, render_dur,
+                                       add_kenburns=True, style=style,
+                                       motion=motion)
+                    log.info("  Seg %d: Pexels %.1fs (render %.1fs) [%s] '%s'",
+                             i, seg_dur, render_dur, motion,
+                             seg.get("visual_query", "")[:35])
+                except Exception as e:
+                    log.warning("  Seg %d clip error: %s → gradient", i, e)
+                    raw = None
+
+            if not (raw and proc.exists() and proc.stat().st_size > 1000):
+                build_gradient_clip(colors, render_dur, proc, shorts_mode=shorts)
+                log.info("  Seg %d: gradient  %.1fs [%s]", i, render_dur, motion)
+
+            # Loop processed clip to fill full segment duration if narration is longer
+            if seg_dur > render_dur + 0.5:
+                looped = wdir / f"seg_{i:03d}_loop.mp4"
+                ow = SV_W if shorts else 1920
+                oh = SV_H if shorts else 1080
+                r_loop = subprocess.run(
+                    ["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(proc),
+                     "-vf", f"scale={ow}:{oh}:flags=bilinear,format=yuv420p",
+                     "-c:v", "libx264", "-preset", "fast", "-crf", "21",
+                     "-an", "-t", str(seg_dur), str(looped)],
+                    capture_output=True, encoding="utf-8", errors="replace", timeout=120)
+                if r_loop.returncode == 0 and looped.exists() and looped.stat().st_size > 1000:
+                    proc = looped
+
+            processed.append(proc)
+
+        # ── Step 4: Cards + concat ───────────────────────────────
+        all_clips    = []
+        intro_offset = 0.0
+
+        if req.add_intro:
+            tc = wdir / "title_card.mp4"
+            make_title_card(title, style, 2.0, tc, shorts_mode=shorts)
+            all_clips.append(tc)
+            intro_offset = 2.0
+
+        all_clips.extend(processed)
+
+        if req.add_outro:
+            oc = wdir / "outro_card.mp4"
+            make_outro_card(style, 2.0, oc, shorts_mode=shorts)
+            all_clips.append(oc)
+            total_dur += 2.0
+
+        total_dur  += intro_offset
+        timestamps  = [(t0 + intro_offset, t1 + intro_offset)
+                       for t0, t1 in timestamps]
+
+        # xfade duration: 0 for hard-cut, 0.20s for Shorts, 0.40s standard
+        xfade = 0.0 if hard_cut else (0.20 if shorts else 0.40)
+
+        log.info("Step 4/5: Concat %d clips  hard_cut=%s  xfade=%.2fs",
+                 len(all_clips), hard_cut, xfade)
+        video_track = wdir / "video_track.mp4"
+        concat_video_segments(all_clips, video_track, wdir,
+                               xfade_dur=xfade,
+                               shorts_mode=shorts,
+                               hard_cut=hard_cut)
+
+        # ── Subtitles ─────────────────────────────────────────────
+        subs_path = None
+        if req.show_subs:
+            subs_path = wdir / "subs.ass"
+            write_subtitles(
+                segments, timestamps, total_dur, subs_path,
+                video_style  = style,
+                cap_position = cap_position,
+                cap_style    = cap_style,
+                custom_x     = custom_x,
+                custom_y     = custom_y,
+                shorts_mode  = shorts,
             )
-            await loop.run_in_executor(None, fn)
+
+        # ── Music ──────────────────────────────────────────────────
+        music_path = None
+        if req.music_volume > 0:
+            music_path = get_music(style, total_dur, MUSIC_DIR, wdir)
+
+        # ── Final assembly ─────────────────────────────────────────
+        mode_label = "Shorts 1080×1920" if shorts else "YouTube 1920×1080"
+        log.info("Step 5/5: Final assembly (%s)", mode_label)
+        final_out = wdir / "final.mp4"
+        fn = functools.partial(
+            assemble,
+            video_track, audio_path, subs_path,
+            music_path, req.music_volume, total_dur,
+            final_out, wdir,
+            cap_position, cap_style, custom_x, custom_y, shorts,
+        )
+        await asyncio.get_event_loop().run_in_executor(None, fn)
+
+        if not final_out.exists():
+            raise RuntimeError("final.mp4 was not created")
+
+        size_mb   = final_out.stat().st_size / 1_048_576
+        pexels_ct = sum(1 for p in clip_paths if p)
+        cut_type  = "hard-cut" if hard_cut else f"xfade-{xfade:.2f}s"
+        log.info("Done: %.1f MB  %.1fs  %d/%d Pexels  %s  %s",
+                 size_mb, total_dur, pexels_ct, len(segments), mode_label, cut_type)
+
+        return GenerateResponse(
+            status    = "success",
+            video_url = f"/api/download/{ts}",
+            title     = title,
+            message   = (
+                f"{'📱 Shorts' if shorts else '🎬 YouTube'}  "
+                f"{total_dur:.0f}s · {len(segments)} segments · "
+                f"{size_mb:.1f} MB · "
+                f"{pexels_ct}/{len(segments)} Pexels · "
+                f"speed {voice_speed:.2f}x · "
+                f"{cap_style}/{cap_position} · {cut_type}"
+            ),
+        )
+
     except Exception as e:
-        log.error(traceback.format_exc())
-        raise HTTPException(500, f"Render failed: {e}")
+        log.error("Generation failed:\n%s", traceback.format_exc())
+        raise HTTPException(500, f"Generation failed: {e}")
 
-    if not video_path.exists():
-        raise HTTPException(500, "Output video not created.")
 
-    size_mb = video_path.stat().st_size / 1_048_576
-    bg_src = "Pexels" if has_bg else "gradient"
-    log.info("✅  %.1f MB", size_mb)
+# ─── Download + progress ──────────────────────────────────────────
 
-    return GenerateResponse(
-        status="success",
-        video_url=f"/download/{ts}",
-        message=f"{duration:.0f}s · {len(req.script)} captions · {size_mb:.1f} MB · {bg_src}",
-    )
+@app.get("/api/download/{ts}")
+async def api_download(ts: str):
+    p = OUTPUT_DIR / ts / "final.mp4"
+    if not p.exists():
+        raise HTTPException(404, "Video not found")
+    return FileResponse(str(p), media_type="video/mp4",
+                        filename=f"shorts_{ts}.mp4")
 
-@app.get("/download/{timestamp}")
-async def download_video(timestamp: str):
-    vp = OUTPUT_DIR / timestamp / "shorts.mp4"
-    if not vp.exists(): raise HTTPException(404,"Video not found.")
-    return FileResponse(str(vp), media_type="video/mp4", filename=f"shorts_{timestamp}.mp4")
 
-@app.get("/progress/{timestamp}")
-async def render_progress(timestamp: str):
-    """Poll this to get real-time render progress."""
-    wdir = OUTPUT_DIR / timestamp
-    mp4  = wdir / "shorts.mp4"
-    audio = wdir / "voice.mp3"
-    bg    = wdir / "bg.mp4"
-    grad  = wdir / "grad.png"
+@app.get("/api/progress/{ts}")
+async def api_progress(ts: str):
+    wdir  = OUTPUT_DIR / ts
+    final = wdir / "final.mp4"
+    vt    = wdir / "video_track.mp4"
+    audio = wdir / "full_voice.mp3"
+    clips = list(wdir.glob("seg_*_clip.mp4")) if wdir.exists() else []
 
-    if mp4.exists():
-        size = mp4.stat().st_size
-        return {"step": 4, "label": "Done", "done": True, "size_mb": round(size/1_048_576, 1)}
-    if audio.exists() and (bg.exists() or grad.exists()):
-        return {"step": 3, "label": "Rendering frames…", "done": False}
+    if final.exists():
+        return {"step": 5, "label": "Done ✅",
+                "done": True,
+                "size_mb": round(final.stat().st_size / 1_048_576, 1)}
+    if vt.exists():
+        return {"step": 4, "label": "Final assembly…", "done": False}
+    if clips:
+        return {"step": 3, "label": f"Processing {len(clips)} clips…", "done": False}
     if audio.exists():
-        return {"step": 2, "label": "Fetching background…", "done": False}
+        return {"step": 2, "label": "Downloading Pexels clips…", "done": False}
     if wdir.exists():
-        return {"step": 1, "label": "Generating voice…", "done": False}
+        return {"step": 1, "label": "Generating narration…", "done": False}
     return {"step": 0, "label": "Starting…", "done": False}
 
-# ───────────────────────────────────────────────
-def cleanup(keep=10):
-    dirs = sorted(OUTPUT_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for d in dirs[keep:]:
-        if d.is_dir(): shutil.rmtree(d, ignore_errors=True)
+
+# ─── Startup ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    cleanup()
-    print("\n🎬  AI YouTube Shorts Generator")
-    print("═"*46)
-    ok_ff,ok_fp = check_ffmpeg()
-    print(f"  FFmpeg   : {'✅' if ok_ff else '❌  https://ffmpeg.org'}")
-    print(f"  FFprobe  : {'✅' if ok_fp else '❌'}")
-    print(f"  Claude   : {'✅ configured' if ANTHROPIC_API_KEY!='your-anthropic-key-here' else '⚠️  Not set — using template scripts'}")
-    print(f"  Pexels   : {'✅ configured' if PEXELS_API_KEY!='your-pexels-key-here' else '⚠️  Not set — using gradient backgrounds'}")
-    print(f"  Voices   : {len(VOICES)} neural voices")
-    print(f"  Output   : {OUTPUT_DIR.absolute()}")
-    print(f"\n  → Open   http://127.0.0.1:8000\n")
-    if sys.platform == "win32":
-        import uvicorn
-        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    _cleanup()
+    ok_ff, ok_fp = _ffmpeg_ok()
+    has_pexels   = _key_configured(PEXELS_API_KEY, _PLACEHOLDER_PEXELS)
+    has_gemini   = _key_configured(GEMINI_API_KEY, _PLACEHOLDER_GEMINI)
+    has_groq     = _key_configured(GROQ_API_KEY,   _PLACEHOLDER_GROQ)
+    ai_count     = sum([has_gemini, has_groq])
+
+    print("\n  ┌──────────────────────────────────────────────┐")
+    print("  │   YouTube / Shorts Video Generator  v6      │")
+    print("  │   Gemini + Groq Edition                      │")
+    print("  └──────────────────────────────────────────────┘")
+    print()
+    print(f"  FFmpeg   : {'✅ Ready' if ok_ff else '❌ MISSING — https://ffmpeg.org'}")
+    print(f"  FFprobe  : {'✅ Ready' if ok_fp else '❌ MISSING'}")
+    print()
+
+    print(f"  ── AI Script Providers ({ai_count}/2 active) ──")
+    if has_gemini:
+        print(f"  Gemini   : ✅  configured  (gemini-1.5-flash — free tier)")
     else:
-        subprocess.run([sys.executable,"-m","gunicorn","main:app",
-            "--bind","0.0.0.0:8000","--workers","1",
-            "--worker-class","uvicorn.workers.UvicornWorker",
-            "--timeout","300","--access-logfile","-","--error-logfile","-",
-        ], check=True)
+        print(f"  Gemini   : –   Not set  →  GEMINI_API_KEY in .env")
+        print(f"             aistudio.google.com/app/apikey  (FREE, 1500/day)")
+
+    if has_groq:
+        print(f"  Groq     : ✅  configured  (llama-3.3-70b — free tier)")
+    else:
+        print(f"  Groq     : –   Not set  →  GROQ_API_KEY in .env")
+        print(f"             console.groq.com  (FREE, 14 400/day)")
+
+    if ai_count == 0:
+        print()
+        print(f"  ⚠️  No AI keys — using local template scripts.")
+        print(f"     Add GEMINI_API_KEY for free AI-generated scripts.")
+
+    print()
+    if has_pexels:
+        print(f"  Pexels   : ✅  Configured")
+    else:
+        print(f"  Pexels   : ⚠️  Not set — gradient backgrounds")
+        print(f"             → Free key: https://www.pexels.com/api")
+    print()
+    print(f"  Styles    : {len(VIDEO_STYLES)} (viral, lifestyle, educational, documentary, motivational, news)")
+    print(f"  Voices    : {len(VOICES)} across 14 languages | Speeds: {len(VOICE_SPEEDS)}")
+    print(f"  Cap styles: {len(CAPTION_STYLES)} (viral, standard, bold, highlighted, box, shorts, cinematic, mrbeast)")
+    print(f"  Cap pos   : {len(CAPTION_POSITIONS)} (bottom, top, center, viral_center, lower_third, upper_third, custom)")
+    print(f"  Output    : {OUTPUT_DIR.absolute()}")
+    print(f"\n  ➜  Open http://127.0.0.1:8000\n")
+
+    if not ok_ff:
+        sys.exit(1)
+
+    import threading, webbrowser
+    threading.Thread(
+        target=lambda: (time.sleep(1.2), webbrowser.open("http://127.0.0.1:8000")),
+        daemon=True,
+    ).start()
+
+    uvicorn.run("main:app", host="127.0.0.1", port=8000,
+                reload=False, log_level="warning")
