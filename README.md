@@ -41,8 +41,7 @@ pip install -r requirements.txt
 #    Linux   : sudo apt install ffmpeg
 
 # 4. Configure API keys
-cp .env.example .env
-# Edit .env — at minimum add GEMINI_API_KEY for free AI scripts
+Edit .env — at minimum add GEMINI_API_KEY for free AI scripts
 
 # 5. Run
 python main.py
